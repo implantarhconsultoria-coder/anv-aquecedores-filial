@@ -3,12 +3,13 @@
   "cleanUrls": false,
   "functions": {
     "api/index.py": {
-      "runtime": "@vercel/python@4.3.0",
       "maxDuration": 30
     },
     "api/page.py": {
-      "runtime": "@vercel/python@4.3.0",
       "maxDuration": 20
+    },
+    "api/vision_node.mjs": {
+      "maxDuration": 60
     }
   },
   "redirects": [
