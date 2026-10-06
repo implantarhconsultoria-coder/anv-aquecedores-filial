@@ -6,17 +6,9 @@
       "runtime": "@vercel/python@4.3.0",
       "maxDuration": 30
     },
-    "api/vision.py": {
-      "runtime": "@vercel/python@4.3.0",
-      "maxDuration": 60
-    },
     "api/page.py": {
       "runtime": "@vercel/python@4.3.0",
       "maxDuration": 20
-    },
-    "api/ai_selftest.py": {
-      "runtime": "@vercel/python@4.3.0",
-      "maxDuration": 45
     }
   },
   "redirects": [
@@ -43,8 +35,7 @@
     { "source": "/mobile-base", "destination": "/index.html" },
     { "source": "/desktop", "destination": "/api/page?mode=desktop" },
     { "source": "/", "destination": "/api/page?mode=mobile" },
-    { "source": "/api/ai/selftest", "destination": "/api/ai_selftest" },
-    { "source": "/api/ai/analyze-product", "destination": "/api/vision" },
+    { "source": "/api/ai/analyze-product", "destination": "/api/vision_node" },
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/api", "destination": "/api/index" }
   ],
