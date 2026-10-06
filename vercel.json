@@ -5,6 +5,14 @@
     "api/index.py": {
       "runtime": "@vercel/python@4.3.0",
       "maxDuration": 30
+    },
+    "api/vision.py": {
+      "runtime": "@vercel/python@4.3.0",
+      "maxDuration": 60
+    },
+    "api/page.py": {
+      "runtime": "@vercel/python@4.3.0",
+      "maxDuration": 20
     }
   },
   "redirects": [
@@ -27,6 +35,11 @@
     }
   ],
   "rewrites": [
+    { "source": "/desktop-base", "destination": "/desktop.html" },
+    { "source": "/mobile-base", "destination": "/index.html" },
+    { "source": "/desktop", "destination": "/api/page?mode=desktop" },
+    { "source": "/", "destination": "/api/page?mode=mobile" },
+    { "source": "/api/ai/analyze-product", "destination": "/api/vision" },
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/api", "destination": "/api/index" }
   ],
@@ -45,6 +58,12 @@
     },
     {
       "source": "/desktop",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/smart.js",
       "headers": [
         { "key": "Cache-Control", "value": "no-store, max-age=0" }
       ]
