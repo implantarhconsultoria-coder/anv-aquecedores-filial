@@ -45,15 +45,20 @@ Quando houver cobrança em dólar:
 - registrar a cotação usada e a data da cotação;
 - destacar: **"Valor em reais estimado. O valor efetivamente cobrado pode variar conforme câmbio, IOF, spread do cartão/provedor e data de processamento/fechamento."**
 
-## Primeiro custo registrado
+## Custos ativos
+
+### Supabase — ANV Filial Digital
 
 - Serviço: Supabase — projeto exclusivo ANV Filial Digital
 - Finalidade: banco de dados/backend operacional exclusivo do ANV
-- Valor informado pelo provedor no momento da criação: **US$ 10/mês**
+- Região: `sa-east-1`
+- Status operacional: **ACTIVE_HEALTHY**
+- Valor informado pelo provedor na criação: **US$ 10/mês**
 - Periodicidade: mensal
-- Situação: aguardando criação/confirmação operacional
-- Conversão para BRL: deve usar a cotação vigente na data do relatório mensal
-- Observação: valor em reais é variável conforme câmbio e eventuais impostos/taxas de pagamento.
+- Cotação de referência em 06/10/2026: **US$ 1 = R$ 4,9943**
+- Estimativa em reais na data de referência: **R$ 49,94/mês**
+- Taxas/Impostos: não incluídos nesta estimativa; podem existir IOF, spread cambial e/ou tarifa do meio de pagamento.
+- Observação obrigatória: **Valor em reais estimado. O valor efetivamente cobrado pode variar conforme câmbio, IOF, spread do cartão/provedor e data de processamento/fechamento.**
 
 ## Governança
 
