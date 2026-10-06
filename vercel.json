@@ -8,6 +8,7 @@
     }
   },
   "rewrites": [
+    { "source": "/api/integrations/mercado-livre/callback", "destination": "/api/integrations/mercado-livre/oauth/callback" },
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/api", "destination": "/api/index" }
   ],
