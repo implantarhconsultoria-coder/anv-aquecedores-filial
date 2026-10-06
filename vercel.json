@@ -9,6 +9,18 @@
   },
   "redirects": [
     {
+      "source": "/",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": ".*(Windows NT|Macintosh|X11|CrOS).*"
+        }
+      ],
+      "destination": "/desktop",
+      "permanent": false
+    },
+    {
       "source": "/api/integrations/mercado-livre/callback",
       "destination": "/api/integrations/mercado-livre/oauth/callback",
       "permanent": false
@@ -23,6 +35,30 @@
       "source": "/api/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "no-store" }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/desktop",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/desktop.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
       ]
     }
   ]
