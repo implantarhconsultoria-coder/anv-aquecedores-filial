@@ -3,7 +3,6 @@ import { getVercelOidcToken } from '@vercel/oidc';
 
 const PROJECT_ID = 'prj_L8E2o1UByRs55MjwYUsLcII6kI6F';
 const TEAM_ID = 'team_EF2ynCny10Wt5LjD5O3f2FhM';
-const TEST_KEY = 'anv-product-vision-20261006-Q8r2';
 const MODEL = 'openai/gpt-5-mini';
 
 const PROMPT = `Você é o motor de cadastro inteligente da ANV Filial Digital, operação de peças, componentes e acessórios para aquecedores a gás, com forte presença de peças Rinnai.
@@ -24,7 +23,7 @@ Retorne EXCLUSIVAMENTE um JSON válido com esta estrutura:
   "description": "descrição curta baseada no que é visível",
   "technical_details": "características técnicas que são realmente observáveis",
   "suggested_category_terms": ["termo 1", "termo 2"],
-  "visible_text": ["textos/códigos realmente legíveis na imagem"],
+  "visible_text": ["somente textos/códigos realmente legíveis na imagem"],
   "confidence": 0.0,
   "field_confidence": {
     "name": 0.0,
@@ -40,9 +39,10 @@ Retorne EXCLUSIVAMENTE um JSON válido com esta estrutura:
 
 Regras obrigatórias:
 - Se Rinnai não estiver visível ou inequivocamente identificável, brand deve ser null.
-- Não deduza dimensões ou peso visualmente.
+- Não deduza dimensões, peso, tensão, potência, código de peça ou pinagem visualmente.
 - Não diga que uma peça serve em modelos específicos sem código/identificação suficiente.
 - Para placa/display/painel eletrônico, diferencie placa de controle, display/interface e chicote/cabo quando visível.
+- Em visible_text coloque SOMENTE caracteres alfanuméricos realmente legíveis; não descreva ícones e, se um número estiver ambíguo, omita.
 - O nome deve ser bom para estoque e anúncio, mas sem promessas não verificadas.
 - confidence e field_confidence variam de 0 a 1.`;
 
@@ -140,12 +140,8 @@ function json(res, status, body) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') return json(res, 405, { detail: 'Método não permitido' });
 
-  const url = new URL(req.url, 'https://anv.local');
-  const testMode = url.searchParams.get('test_key') === TEST_KEY;
-  if (!testMode) {
-    const cookies = parseCookies(req.headers.cookie || '');
-    if (!readSession(cookies.anv_session)) return json(res, 401, { detail: 'Sessão inválida ou expirada' });
-  }
+  const cookies = parseCookies(req.headers.cookie || '');
+  if (!readSession(cookies.anv_session)) return json(res, 401, { detail: 'Sessão inválida ou expirada' });
 
   let body = req.body;
   if (typeof body === 'string') {
