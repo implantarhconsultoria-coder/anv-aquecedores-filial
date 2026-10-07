@@ -5,8 +5,8 @@
     "api/index.py": { "maxDuration": 30 },
     "api/guard.py": { "maxDuration": 30 },
     "api/page.py": { "maxDuration": 20 },
-    "api/vision_node.mjs": { "maxDuration": 60 },
-    "api/anv_ops.mjs": { "maxDuration": 30 },
+    "api/vision_node.mjs": { "maxDuration": 120 },
+    "api/anv_ops.mjs": { "maxDuration": 60 },
     "api/publish_safe.py": { "maxDuration": 60 }
   },
   "redirects": [
@@ -83,6 +83,12 @@
     },
     {
       "source": "/access.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/research.js",
       "headers": [
         { "key": "Cache-Control", "value": "no-store, max-age=0" }
       ]
