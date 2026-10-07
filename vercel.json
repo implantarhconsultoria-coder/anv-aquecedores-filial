@@ -10,6 +10,9 @@
     },
     "api/vision_node.mjs": {
       "maxDuration": 60
+    },
+    "api/anv_ops.mjs": {
+      "maxDuration": 30
     }
   },
   "redirects": [
@@ -37,6 +40,7 @@
     { "source": "/desktop", "destination": "/api/page?mode=desktop" },
     { "source": "/", "destination": "/api/page?mode=mobile" },
     { "source": "/api/ai/analyze-product", "destination": "/api/vision_node" },
+    { "source": "/api/anv-ops", "destination": "/api/anv_ops" },
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/api", "destination": "/api/index" }
   ],
