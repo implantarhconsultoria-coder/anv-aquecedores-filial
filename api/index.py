@@ -1,4 +1,5 @@
 import os
+import asyncio
 import re
 import json
 import hmac
@@ -515,6 +516,186 @@ def description_text(p: dict) -> str:
     if p.get("description"):
         lines += ["", str(p["description"]).strip()]
     return "\n".join(lines)[:5000]
+
+
+
+def research_query_terms(body: dict) -> List[str]:
+    terms: List[str] = []
+    def add(*parts: Any):
+        value = " ".join(str(x).strip() for x in parts if x is not None and str(x).strip())
+        value = re.sub(r"\s+", " ", value).strip()
+        if value and value.lower() not in [x.lower() for x in terms]:
+            terms.append(value)
+    ean = re.sub(r"\D", "", str(body.get("ean") or body.get("gtin") or ""))
+    if ean:
+        add(ean)
+    strong = body.get("part_number") or body.get("code") or body.get("sku") or body.get("reference")
+    if strong:
+        add(body.get("brand"), strong)
+        add(strong)
+    if body.get("brand") and body.get("model"):
+        add(body.get("brand"), body.get("model"))
+    if body.get("brand") and (body.get("name_hint") or body.get("name")):
+        add(body.get("brand"), body.get("name_hint") or body.get("name"))
+    if not terms:
+        add(body.get("manufacturer"), body.get("name_hint") or body.get("name"), body.get("model"))
+    return terms[:5]
+
+
+def ml_attribute_map(attrs: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for a in attrs or []:
+        if not isinstance(a, dict):
+            continue
+        key = str(a.get("name") or a.get("id") or "").strip()
+        if not key:
+            continue
+        value = a.get("value_name")
+        if value in (None, ""):
+            value = a.get("value_id")
+        if value in (None, "") and isinstance(a.get("values"), list) and a["values"]:
+            value = a["values"][0].get("name") or a["values"][0].get("id")
+        if value not in (None, ""):
+            out[key] = value
+    return out
+
+
+def ml_attribute_id_map(attrs: Any) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for a in attrs or []:
+        if not isinstance(a, dict):
+            continue
+        aid = str(a.get("id") or "").strip()
+        if not aid:
+            continue
+        value = a.get("value_name") or a.get("value_id")
+        if value in (None, "") and isinstance(a.get("values"), list) and a["values"]:
+            value = a["values"][0].get("name") or a["values"][0].get("id")
+        if value not in (None, ""):
+            out[aid] = str(value)
+    return out
+
+
+def ml_pick_attr(attrs: Any, *wanted: str) -> Optional[str]:
+    wanted_u = {x.upper() for x in wanted}
+    for a in attrs or []:
+        if not isinstance(a, dict):
+            continue
+        aid = str(a.get("id") or "").upper()
+        name = str(a.get("name") or "").upper()
+        if aid in wanted_u or any(w in name for w in wanted_u):
+            value = a.get("value_name") or a.get("value_id")
+            if value not in (None, ""):
+                return str(value)
+    return None
+
+
+def ml_reference_candidate(item: dict, query: str) -> dict:
+    attrs = item.get("attributes") or []
+    pictures = []
+    for pic in item.get("pictures") or []:
+        if isinstance(pic, dict):
+            url = pic.get("secure_url") or pic.get("url")
+            if url:
+                pictures.append(url)
+    if not pictures:
+        thumb = item.get("thumbnail") or item.get("secure_thumbnail")
+        if thumb:
+            pictures.append(thumb)
+    item_id = str(item.get("id") or "")
+    permalink = item.get("permalink") or (f"https://produto.mercadolivre.com.br/{item_id}" if item_id else None)
+    brand = ml_pick_attr(attrs, "BRAND", "MARCA")
+    model = ml_pick_attr(attrs, "MODEL", "MODELO")
+    gtin = ml_pick_attr(attrs, "GTIN", "EAN")
+    part_number = ml_pick_attr(attrs, "MPN", "PART_NUMBER", "PART NUMBER", "OEM")
+    code = ml_pick_attr(attrs, "SELLER_SKU", "SKU", "CODIGO", "CÓDIGO") or part_number
+    return {
+        "url": permalink,
+        "permalink": permalink,
+        "domain": "mercadolivre.com.br",
+        "title": item.get("title"),
+        "name": item.get("title"),
+        "source_type": "marketplace",
+        "manufacturer": brand,
+        "brand": brand,
+        "model": model,
+        "code": code,
+        "part_number": part_number,
+        "ean": gtin,
+        "description": None,
+        "image_url": pictures[0] if pictures else None,
+        "specifications": ml_attribute_map(attrs),
+        "evidence": [f"Resultado Mercado Livre para: {query}"],
+        "item_id": item_id or None,
+        "category_id": item.get("category_id"),
+        "marketplace": {
+            "item_id": item_id or None,
+            "category_id": item.get("category_id"),
+            "attributes": ml_attribute_id_map(attrs),
+            "attribute_labels": ml_attribute_map(attrs),
+            "pictures": pictures[:10],
+            "condition": item.get("condition"),
+            "listing_type_id": item.get("listing_type_id"),
+            "buying_mode": item.get("buying_mode"),
+        },
+    }
+
+
+@app.post("/api/marketplace/search-reference")
+async def marketplace_search_reference(body: Dict[str, Any], user: dict = Depends(require_auth)):
+    queries = research_query_terms(body or {})
+    if not queries:
+        return {"ok": True, "queries": [], "candidates": [], "warnings": ["Pistas insuficientes para pesquisar no Mercado Livre"]}
+
+    token = await ml_access_token() if db_configured() else None
+    warnings: List[str] = []
+    raw_items: Dict[str, dict] = {}
+    item_query: Dict[str, str] = {}
+    searched = 0
+
+    for query in queries:
+        try:
+            status, data = await ml_request(
+                "GET", f"/sites/{SITE_ID}/search", token=token,
+                params={"q": query, "limit": 8}, allow=(400, 401, 403, 404)
+            )
+        except Exception as exc:
+            warnings.append(f"Busca Mercado Livre indisponível para '{query}': {type(exc).__name__}")
+            continue
+        searched += 1
+        if status != 200 or not isinstance(data, dict):
+            warnings.append(f"Busca Mercado Livre retornou HTTP {status} para '{query}'")
+            continue
+        for item in (data.get("results") or [])[:8]:
+            iid = str(item.get("id") or "")
+            if iid and iid not in raw_items:
+                raw_items[iid] = item
+                item_query[iid] = query
+        if len(raw_items) >= 8:
+            break
+
+    # Enriquecer poucos candidatos com a ficha pública/permitida do item.
+    async def enrich(iid: str, base: dict):
+        try:
+            status, detail = await ml_request("GET", f"/items/{iid}", token=token, allow=(400, 401, 403, 404))
+            if status == 200 and isinstance(detail, dict):
+                merged = dict(base)
+                merged.update({k: v for k, v in detail.items() if v is not None})
+                return iid, merged
+        except Exception:
+            pass
+        return iid, base
+
+    enriched_pairs = await asyncio.gather(*(enrich(iid, item) for iid, item in list(raw_items.items())[:8])) if raw_items else []
+    candidates = [ml_reference_candidate(item, item_query.get(iid, "")) for iid, item in enriched_pairs]
+    return {
+        "ok": True,
+        "queries": queries,
+        "searched_queries": searched,
+        "candidates": candidates,
+        "warnings": warnings,
+        "source": "mercado_livre_existing_integration_read_only",
+    }
 
 
 async def category_suggestions_raw(q: str, token: Optional[str]) -> List[dict]:

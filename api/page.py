@@ -31,10 +31,10 @@ async def page(request: Request, path: str = ""):
 
     html = r.text
     script_tags = [
-        '<script src="/smart.js?v=20261007-1" defer></script>',
-        '<script src="/smart_patch.js?v=20261007-1" defer></script>',
-        '<script src="/access.js?v=20261007-1" defer></script>',
-        '<script src="/research.js?v=20261007-1" defer></script>',
+        '<script src="/smart.js?v=20261007-2" defer></script>',
+        '<script src="/smart_patch.js?v=20261007-2" defer></script>',
+        '<script src="/access.js?v=20261007-2" defer></script>',
+        '<script src="/research.js?v=20261007-2" defer></script>',
     ]
     missing = [tag for tag in script_tags if tag.split('"')[1].split('?')[0] not in html]
     if missing:
