@@ -8,8 +8,10 @@ import { lookup } from 'node:dns/promises';
 
 const visionPath = new URL('../api/vision_node.mjs', import.meta.url);
 const researchPath = new URL('../research.js', import.meta.url);
+const smartPath = new URL('../smart.js', import.meta.url);
 const visionSource = fs.readFileSync(visionPath, 'utf8');
 const researchSource = fs.readFileSync(researchPath, 'utf8');
+const smartSource = fs.readFileSync(smartPath, 'utf8');
 
 function loadVisionInternals() {
   let source = visionSource
@@ -108,6 +110,13 @@ test('cenário 8: fluxo confirmado persiste pesquisa, foto e inicia preflight se
   assert.match(researchSource, /await runPreflight\(productId, research\)/);
   assert.doesNotMatch(researchSource, /\/api\/integrations\/mercado-livre\/connect/);
   assert.doesNotMatch(researchSource, /\/api\/marketplace\/publish/);
+});
+
+test('regressão: reanalisar foto reutiliza o mesmo pipeline validado', () => {
+  assert.match(smartSource, /async function analyzeData\(imageData, filename = 'produto\.jpg'\)/);
+  assert.match(smartSource, /await runPipeline\(imageData, filename, null\)/);
+  assert.match(smartSource, /data\.research_status !== 'CONFIRMADO'/);
+  assert.match(smartSource, /data=await analyzeData\(image,file\.name\)/);
 });
 
 test('match provável exige validação cruzada em domínio diferente', () => {
