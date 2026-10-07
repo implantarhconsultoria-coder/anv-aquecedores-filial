@@ -7,7 +7,7 @@ const PROJECT_ID = 'prj_L8E2o1UByRs55MjwYUsLcII6kI6F';
 const TEAM_ID = 'team_EF2ynCny10Wt5LjD5O3f2FhM';
 const VISION_MODEL = 'openai/gpt-5-mini';
 const EXTRACT_MODEL = 'openai/gpt-5-mini';
-const WEB_MODELS = ['anthropic/claude-sonnet-5', 'anthropic/claude-opus-5'];
+const WEB_SEARCH_MODEL = 'openai/gpt-5-mini';
 const AI_GATEWAY = 'https://ai-gateway.vercel.sh';
 const CACHE_DAYS = 30;
 
@@ -359,29 +359,37 @@ async function webResearch(clues) {
   const token = await gatewayToken();
   if (!token) throw new Error('gateway_token_unavailable');
   const prompt = `Localize na internet o produto exato a partir destas pistas de uma foto.\nPISTAS: ${JSON.stringify(identifiersFrom(clues))}\nCONSULTAS PRIORITÁRIAS: ${JSON.stringify(queries)}\n\nUse busca web real. Pesquise de forma progressiva e ampla, não apenas Mercado Livre. Priorize fabricante, catálogo oficial, distribuidor oficial, revendedor técnico e loja especializada. Não aceite similaridade visual isolada. Código/EAN/modelo/medida divergente deve ser tratado como conflito.\nRetorne ao final SOMENTE um JSON válido neste formato:\n{\"candidates\":[{\"url\":\"https://...\",\"domain\":\"...\",\"title\":\"...\",\"name\":\"...\",\"source_type\":\"manufacturer|official_catalog|authorized_distributor|technical_reseller|specialized_store|ecommerce|marketplace|other\",\"manufacturer\":null,\"brand\":null,\"model\":null,\"code\":null,\"part_number\":null,\"ean\":null,\"description\":\"fatos curtos\",\"image_url\":null,\"specifications\":{},\"evidence\":[\"evidência objetiva\"]}]}\nInclua até 10 candidatos úteis, sem inventar URLs ou fatos.`;
-  let lastError;
-  for (const model of WEB_MODELS) {
-    try {
-      const r = await fetch(`${AI_GATEWAY}/v1/messages`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          max_tokens: 2600,
-          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }],
-          messages: [{ role: 'user', content: prompt }]
-        })
-      });
-      const raw = await r.text();
-      if (!r.ok) { lastError = new Error(`web_search_${r.status}`); lastError.detail = raw.slice(0, 1200); continue; }
-      const envelope = extractJson(raw);
-      const text = (envelope?.content || []).filter(x => x?.type === 'text').map(x => x.text || '').join('\n');
-      const parsed = extractJson(text);
-      const candidates = (Array.isArray(parsed?.candidates) ? parsed.candidates : []).map(cleanCandidate).filter(x => x.url);
-      return { candidates, queries, model };
-    } catch (e) { lastError = e; }
+  const r = await fetch(`${AI_GATEWAY}/v1/responses`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: WEB_SEARCH_MODEL,
+      input: prompt,
+      tools: [{ type: 'web_search' }],
+      tool_choice: 'auto'
+    })
+  });
+  const raw = await r.text();
+  if (!r.ok) {
+    const e = new Error(`web_search_${r.status}`);
+    e.status = r.status;
+    e.detail = raw.slice(0, 1200);
+    throw e;
   }
-  throw lastError || new Error('web_search_failed');
+  const envelope = extractJson(raw);
+  const parts = [];
+  if (typeof envelope?.output_text === 'string' && envelope.output_text.trim()) parts.push(envelope.output_text);
+  for (const item of Array.isArray(envelope?.output) ? envelope.output : []) {
+    if (typeof item?.text === 'string') parts.push(item.text);
+    for (const c of Array.isArray(item?.content) ? item.content : []) {
+      if (['output_text', 'text'].includes(c?.type) && typeof c?.text === 'string') parts.push(c.text);
+    }
+  }
+  const text = parts.join('\n').trim();
+  if (!text) throw new Error('web_search_empty');
+  const parsed = extractJson(text);
+  const candidates = (Array.isArray(parsed?.candidates) ? parsed.candidates : []).map(cleanCandidate).filter(x => x.url);
+  return { candidates, queries, model: WEB_SEARCH_MODEL };
 }
 
 function isPrivateIp(address) {
@@ -700,7 +708,7 @@ export default async function handler(req, res) {
     if (e?.message === 'gateway_token_unavailable') return json(res, 503, { detail: 'Autenticação de IA indisponível' });
     if (e?.message === 'gateway_error') return json(res, 502, { detail: { message: 'Falha no AI Gateway', status: e.status } });
     if (e?.message === 'unsafe_url') return json(res, 400, { detail: 'URL não permitida para pesquisa' });
-    if (String(e?.message || '').startsWith('source_http_') || ['source_not_html', 'no_accessible_source', 'web_search_failed'].includes(e?.message)) return json(res, 502, { detail: `Falha na etapa de pesquisa/fonte: ${e.message}` });
+    if (String(e?.message || '').startsWith('source_http_') || String(e?.message || '').startsWith('web_search_') || ['source_not_html', 'no_accessible_source', 'web_search_failed', 'web_search_empty'].includes(e?.message)) return json(res, 502, { detail: `Falha na etapa de pesquisa/fonte: ${e.message}` });
     return json(res, 502, { detail: `Falha na etapa ${e?.message || 'desconhecida'}` });
   }
 }
