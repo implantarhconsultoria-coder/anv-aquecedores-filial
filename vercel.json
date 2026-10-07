@@ -23,6 +23,11 @@
       "permanent": false
     },
     {
+      "source": "/",
+      "destination": "/mobile",
+      "permanent": false
+    },
+    {
       "source": "/api/integrations/mercado-livre/callback",
       "destination": "/api/integrations/mercado-livre/oauth/callback",
       "permanent": false
@@ -32,7 +37,7 @@
     { "source": "/desktop-base", "destination": "/desktop.html" },
     { "source": "/mobile-base", "destination": "/index.html" },
     { "source": "/desktop", "destination": "/api/page?mode=desktop" },
-    { "source": "/", "destination": "/api/page?mode=mobile" },
+    { "source": "/mobile", "destination": "/api/page?mode=mobile" },
     { "source": "/api/ai/analyze-product", "destination": "/api/vision_node" },
     { "source": "/api/anv-ops", "destination": "/api/anv_ops" },
     { "source": "/api/marketplace/publish", "destination": "/api/publish_safe" },
@@ -48,6 +53,12 @@
     },
     {
       "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/mobile",
       "headers": [
         { "key": "Cache-Control", "value": "no-store, max-age=0" }
       ]
