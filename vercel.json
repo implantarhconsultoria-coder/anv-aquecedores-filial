@@ -2,18 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": false,
   "functions": {
-    "api/index.py": {
-      "maxDuration": 30
-    },
-    "api/page.py": {
-      "maxDuration": 20
-    },
-    "api/vision_node.mjs": {
-      "maxDuration": 60
-    },
-    "api/anv_ops.mjs": {
-      "maxDuration": 30
-    }
+    "api/index.py": { "maxDuration": 30 },
+    "api/page.py": { "maxDuration": 20 },
+    "api/vision_node.mjs": { "maxDuration": 60 },
+    "api/anv_ops.mjs": { "maxDuration": 30 },
+    "api/publish_safe.py": { "maxDuration": 60 }
   },
   "redirects": [
     {
@@ -41,6 +34,7 @@
     { "source": "/", "destination": "/api/page?mode=mobile" },
     { "source": "/api/ai/analyze-product", "destination": "/api/vision_node" },
     { "source": "/api/anv-ops", "destination": "/api/anv_ops" },
+    { "source": "/api/marketplace/publish", "destination": "/api/publish_safe" },
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/api", "destination": "/api/index" }
   ],
@@ -65,6 +59,12 @@
     },
     {
       "source": "/smart.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/smart_patch.js",
       "headers": [
         { "key": "Cache-Control", "value": "no-store, max-age=0" }
       ]
