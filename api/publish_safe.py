@@ -25,13 +25,29 @@ from api.index import (  # noqa: E402
     family_name,
     legacy_title,
     iso,
+    env,
 )
 
 app = FastAPI(title="ANV Safe Mercado Livre Publisher")
 
 
+async def ensure_write_access(user: dict):
+    email = str(user.get("email") or "").lower().strip()
+    role = str(user.get("role") or "").lower()
+    owner_email = env("ANV_LOGIN_EMAIL").lower().strip()
+    if email == owner_email and role in {"owner", "admin"}:
+        return
+    rows = await sb_select("anv_access_users", {"email": f"eq.{email}", "limit": "1"})
+    record = rows[0] if rows else None
+    if not record or not record.get("active"):
+        raise HTTPException(403, "Acesso não encontrado ou desativado")
+    if str(record.get("access_status") or "AGUARDANDO_LIBERACAO") != "LIBERADO":
+        raise HTTPException(423, "Aguardando liberação do sistema")
+
+
 @app.post("/{path:path}")
 async def publish_safe(path: str, body: PublishIn, user: dict = Depends(require_auth)):
+    await ensure_write_access(user)
     if not body.confirm:
         raise HTTPException(400, "Confirmação obrigatória")
     if not db_configured():
@@ -154,7 +170,7 @@ async def publish_safe(path: str, body: PublishIn, user: dict = Depends(require_
             )
             if description_status not in (200, 201):
                 description_warning = f"Anúncio publicado, mas a descrição retornou HTTP {description_status}"
-        except Exception as exc:
+        except Exception:
             description_warning = "Anúncio publicado e vinculado; a descrição poderá ser sincronizada novamente"
 
     return {
