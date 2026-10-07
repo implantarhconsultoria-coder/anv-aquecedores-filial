@@ -58,6 +58,31 @@ async function sb(method, table, { params = {}, body, prefer } = {}) {
   return data;
 }
 
+function isOwnerSession(user) {
+  const email = String(user?.email || '').toLowerCase().trim();
+  const role = String(user?.role || '').toLowerCase();
+  const owner = String(process.env.ANV_LOGIN_EMAIL || '').toLowerCase().trim();
+  return !!email && email === owner && ['owner','admin'].includes(role);
+}
+
+async function ensureWriteAccess(user) {
+  if (isOwnerSession(user)) return;
+  const email = String(user?.email || '').toLowerCase().trim();
+  const rows = await sb('GET', 'anv_access_users', { params: { select: '*', email: `eq.${email}`, limit: '1' } }) || [];
+  const record = rows[0];
+  if (!record || !record.active) {
+    const e = new Error('Acesso não encontrado ou desativado');
+    e.status = 403;
+    throw e;
+  }
+  if (String(record.access_status || 'AGUARDANDO_LIBERACAO') !== 'LIBERADO') {
+    const e = new Error('Aguardando liberação do sistema');
+    e.status = 423;
+    e.detail = { access_status: record.access_status || 'AGUARDANDO_LIBERACAO', code: 'ANV_ACCESS_PENDING' };
+    throw e;
+  }
+}
+
 async function catalog() {
   const products = await sb('GET', 'anv_products', { params: { select: '*', order: 'created_at.desc', limit: '500' } }) || [];
   const images = await sb('GET', 'anv_product_images', { params: { select: '*', order: 'position.asc', limit: '3000' } }) || [];
@@ -140,11 +165,13 @@ async function setMain(body) {
 
 export default async function handler(req, res) {
   const cookies = parseCookies(req.headers.cookie || '');
-  if (!readSession(cookies.anv_session)) return json(res, 401, { detail: 'Sessão inválida ou expirada' });
+  const user = readSession(cookies.anv_session);
+  if (!user) return json(res, 401, { detail: 'Sessão inválida ou expirada' });
   try {
     const url = new URL(req.url, 'https://anv.local');
     if (req.method === 'GET' && url.searchParams.get('action') === 'catalog') return json(res, 200, await catalog());
     if (req.method !== 'POST') return json(res, 405, { detail: 'Método não permitido' });
+    await ensureWriteAccess(user);
     let body = req.body;
     if (typeof body === 'string') body = JSON.parse(body || '{}');
     body = body || {};
