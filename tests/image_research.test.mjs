@@ -92,8 +92,9 @@ test('cenário 5: resultado sem evidência suficiente vira pendência real', () 
 
 test('cenário 6: backend possui fallback de fonte acessível', () => {
   assert.match(visionSource, /async function findUsableSource/);
-  assert.match(visionSource, /for \(const candidate of pool\)/);
-  assert.match(visionSource, /safeFetchPage\(candidate\.url\)/);
+  assert.match(visionSource, /const candidates = \[match\.selected, \.\.\.\(match\.candidates \|\| \[\]\)\]/);
+  assert.match(visionSource, /for \(const c of candidates\)/);
+  assert.match(visionSource, /safeFetchPage\(c\.url\)/);
 });
 
 test('cenário 7: preço e estoque externos não entram no produto técnico', () => {
@@ -110,12 +111,19 @@ test('cenário 8: fluxo confirmado persiste pesquisa, foto e inicia preflight se
 });
 
 test('match provável exige validação cruzada em domínio diferente', () => {
-  const clues = vision.normalizeClues({ brand: 'Rinnai', model: 'M10' });
-  const a = candidate({ url: 'https://a.example/m10', domain: 'a.example', source_type: 'technical_reseller', code: '', part_number: '' });
-  const b = candidate({ url: 'https://b.example/m10', domain: 'b.example', source_type: 'specialized_store', code: '', part_number: '' });
+  const clues = vision.normalizeClues({ brand: 'Rinnai', name_hint: 'Produto técnico' });
+  const a = candidate({
+    url: 'https://a.example/produto', domain: 'a.example', source_type: 'manufacturer',
+    model: '', code: '', part_number: '', ean: '7891234567890'
+  });
+  const b = candidate({
+    url: 'https://b.example/produto', domain: 'b.example', source_type: 'authorized_distributor',
+    model: '', code: '', part_number: '', ean: '7891234567890'
+  });
   const one = vision.chooseMatch([a], clues);
   const two = vision.chooseMatch([a, b], clues);
   assert.equal(one.status, 'PRODUTO_NAO_CONFIRMADO');
   assert.equal(two.status, 'CONFIRMADO');
   assert.equal(two.match_level, 'provavel');
+  assert.match(two.selected.evidence.join(' '), /Validação cruzada/);
 });
