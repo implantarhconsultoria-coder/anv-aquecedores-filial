@@ -56,16 +56,17 @@
   }
 
   function decorate(){
-    ensureStyle();
-    clearDecoration();
     if (!access.locked) return;
+    ensureStyle();
 
-    const header = document.querySelector('header.app') || document.querySelector('header');
-    if (header) {
-      const banner = document.createElement('div');
-      banner.className = 'anv-access-banner';
-      banner.textContent = '🔒 Acesso de demonstração · aguardando liberação do sistema';
-      header.insertAdjacentElement('afterend', banner);
+    if (!document.querySelector('.anv-access-banner')) {
+      const header = document.querySelector('header.app') || document.querySelector('header');
+      if (header) {
+        const banner = document.createElement('div');
+        banner.className = 'anv-access-banner';
+        banner.textContent = '🔒 Acesso de demonstração · aguardando liberação do sistema';
+        header.insertAdjacentElement('afterend', banner);
+      }
     }
 
     document.querySelectorAll('button,.btn,input[type="submit"],input[type="button"]').forEach(el => {
@@ -85,11 +86,13 @@
   }
 
   function applyUser(user){
+    const wasLocked = access.locked;
     access.user = user || null;
     access.locked = !!access.user && access.user.role !== 'owner' && access.user.access_status !== 'LIBERADO';
     access.loaded = true;
     window.__anvAccess = access;
-    decorate();
+    if (access.locked) decorate();
+    else if (wasLocked) clearDecoration();
   }
 
   async function loadAccess(){
@@ -136,9 +139,12 @@
         applyUser(data?.user || null);
       } catch (_) {}
     } else if (/\/api\/auth\/logout(?:\?|$)/.test(url) && method === 'POST' && response.ok) {
-      applyUser(null);
+      const wasLocked = access.locked;
+      access.user = null;
+      access.locked = false;
       access.loaded = false;
-      clearDecoration();
+      window.__anvAccess = access;
+      if (wasLocked) clearDecoration();
     } else if (/\/api\/auth\/me(?:\?|$)/.test(url) && method === 'GET' && response.ok) {
       try {
         const data = await response.clone().json();
@@ -149,6 +155,9 @@
     return response;
   };
 
-  new MutationObserver(() => { if (access.loaded) decorate(); }).observe(document.documentElement,{subtree:true,childList:true});
+  new MutationObserver(() => {
+    if (access.loaded && access.locked) decorate();
+  }).observe(document.documentElement,{subtree:true,childList:true});
+
   loadAccess();
 })();
