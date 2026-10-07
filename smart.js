@@ -7,6 +7,10 @@
   let lastPhotoDataUrl = null;
   let currentProductId = null;
   let decorateTimer = null;
+  let lastSelectedFile = null;
+  let resumeStarted = false;
+  const PIPELINE_KEY = 'anv-image-pipeline-v3';
+  const PIPELINE_TTL_MS = 30 * 60 * 1000;
 
   const text = v => v === null || v === undefined ? '' : String(v).trim();
   const esc = v => text(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -76,45 +80,192 @@
     setPanel(`<div style="color:#111;font-weight:800;margin-bottom:5px">IA identificou: ${esc(data.name || data.product_type || 'produto')} · confiança ${conf}%</div>${details || 'Imagem analisada.'}${pending}${warnings}<div style="margin-top:7px;color:#6b7280">Só campos sustentados pela foto são preenchidos. O restante fica para confirmação.</div>`);
   }
 
-  async function analyzeData(imageData, filename = 'produto.jpg') {
-    const response = await nativeFetch('/api/ai/analyze-product', {
-      method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ image_data_url: imageData, filename })
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(typeof payload?.detail === 'string' ? payload.detail : (payload?.detail?.message || `Erro ${response.status}`));
-    return payload;
+  function setProgress(stage, detail = '', tone = 'normal') {
+    if (typeof window.__anvResearchProgress === 'function') {
+      window.__anvResearchProgress(stage, detail, tone);
+      return;
+    }
+    const color = tone === 'error' ? '#991b1b' : '#111';
+    setPanel(`<b style="color:${color}">${esc(stage)}</b>${detail ? `<br>${esc(detail)}` : ''}`);
+  }
+
+  function readPipeline() {
+    try {
+      const state = JSON.parse(localStorage.getItem(PIPELINE_KEY) || 'null');
+      if (!state || !Number(state.updated_at) || Date.now() - state.updated_at > PIPELINE_TTL_MS) return null;
+      return state;
+    } catch { return null; }
+  }
+
+  function writePipeline(state) {
+    const next = { ...state, updated_at: Date.now() };
+    try { localStorage.setItem(PIPELINE_KEY, JSON.stringify(next)); return next; }
+    catch {
+      try {
+        const compactState = { ...next }; delete compactState.image_data_url;
+        localStorage.setItem(PIPELINE_KEY, JSON.stringify(compactState));
+      } catch (_) {}
+      return next;
+    }
+  }
+
+  function clearPipeline() { try { localStorage.removeItem(PIPELINE_KEY); } catch (_) {} }
+
+  async function postStage(path, body, { stage, timeout = 45_000, retries = 1 } = {}) {
+    let last = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+      try {
+        const response = await nativeFetch(path, {
+          method: 'POST', credentials: 'include', signal: controller.signal,
+          headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const message = typeof payload?.detail === 'string' ? payload.detail : (payload?.detail?.message || `Erro ${response.status}`);
+          const error = new Error(message); error.status = response.status; error.stage = payload?.stage || stage; error.retryable = payload?.retryable !== false;
+          throw error;
+        }
+        return payload;
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          last = new Error(`Tempo excedido na etapa: ${stage}`); last.stage = stage; last.retryable = true;
+        } else { last = error; if (!last.stage) last.stage = stage; }
+        const canRetry = attempt < retries && last?.retryable !== false && (!last?.status || [408,429,500,502,503,504].includes(Number(last.status)));
+        if (canRetry) { await new Promise(r => setTimeout(r, 500 * (attempt + 1))); continue; }
+        throw last;
+      } finally { clearTimeout(timer); }
+    }
+    throw last || new Error(`Falha na etapa: ${stage}`);
+  }
+
+  function applyFinalPayload(payload) {
+    aiData = payload;
+    window.__anvAiProduct = payload;
+    fill('title', payload.name, 0.62, 'name');
+    fill('brand', payload.brand, 0.90, 'brand');
+    fill('model', payload.model, 0.92, 'model');
+    fill('material', payload.material, 0.82, 'material');
+  }
+
+  function recoverableError(error) {
+    const stage = error?.stage || 'processamento';
+    setProgress(`Falha em: ${stage}`, error?.message || 'Não foi possível concluir esta etapa.', 'error');
+    const panel = document.getElementById('anv-ai-photo-result');
+    if (panel) {
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.id = 'anv-retry-analysis'; retry.textContent = 'Tentar novamente';
+      retry.style.cssText = 'margin-top:10px;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;background:#fff;font-weight:700;cursor:pointer';
+      retry.onclick = async () => {
+        const saved = readPipeline();
+        if (saved?.image_data_url) await runPipeline(saved.image_data_url, saved.filename || 'produto.jpg', saved);
+        else if (lastSelectedFile) await analyze(lastSelectedFile);
+      };
+      panel.appendChild(retry);
+    }
+  }
+
+  async function runPipeline(imageData, filename = 'produto.jpg', resume = null) {
+    if (busy) return;
+    busy = true;
+    aiData = null;
+    window.__anvAiProduct = null;
+    let state = resume && resume.image_data_url ? { ...resume } : { image_data_url: imageData, filename, step: 'image' };
+    if (!state.image_data_url) state.image_data_url = imageData;
+    if (!state.filename) state.filename = filename;
+    state = writePipeline(state);
+    try {
+      if (!state.clues_result) {
+        setProgress('Identificando pistas', 'Lendo códigos, EAN, marca, modelo e textos visíveis.');
+        state.clues_result = await postStage('/api/ai/analyze-product', { mode:'clues', image_data_url:state.image_data_url, filename:state.filename }, { stage:'Identificando pistas', timeout:42_000, retries:1 });
+        state.step = 'clues'; state = writePipeline(state);
+      }
+      const clues = state.clues_result?.clues || {};
+
+      if (!state.web_result) {
+        setProgress('Pesquisando na internet', 'Buscando o produto em fabricantes, catálogos, distribuidores, lojas e páginas públicas.');
+        state.web_result = await postStage('/api/ai/analyze-product', { mode:'web', clues }, { stage:'Pesquisando na internet', timeout:55_000, retries:1 });
+        state.step = 'web'; state = writePipeline(state);
+      }
+
+      if (!state.ml_result) {
+        setProgress('Pesquisando no Mercado Livre', 'Consultando anúncios existentes somente como referência de identificação e estrutura.');
+        try {
+          state.ml_result = await postStage('/api/marketplace/search-reference', clues, { stage:'Pesquisando no Mercado Livre', timeout:35_000, retries:0 });
+        } catch (mlError) {
+          state.ml_result = { candidates:[], warnings:[mlError?.message || 'Mercado Livre indisponível nesta tentativa'] };
+        }
+        state.step = 'marketplace'; state = writePipeline(state);
+      }
+
+      if (!state.match_result) {
+        setProgress('Comparando resultados', 'Cruzando EAN, códigos, marca, modelo, especificações e fontes independentes.');
+        state.match_result = await postStage('/api/ai/analyze-product', {
+          mode:'match', clues, image_hash:state.clues_result?.image_hash,
+          web_candidates:state.web_result?.candidates || [], ml_candidates:state.ml_result?.candidates || [],
+          search_queries:state.web_result?.queries || [], web_search_model:state.web_result?.model || null,
+          ml_warning:(state.ml_result?.warnings || [])[0] || null
+        }, { stage:'Comparando resultados', timeout:20_000, retries:0 });
+        state.step = 'match'; state = writePipeline(state);
+      }
+
+      if (!state.match_result?.confirmed) {
+        const pending = state.match_result?.result || { research_status:'PRODUTO_NAO_CONFIRMADO', candidates:state.match_result?.candidates || [], warnings:['Correspondência insuficiente'] };
+        applyFinalPayload(pending);
+        state.step = 'pending'; state.completed = true; writePipeline(state);
+        return;
+      }
+
+      setProgress('Produto encontrado', `${state.match_result?.selected?.title || state.match_result?.selected?.name || 'Correspondência confirmada'} · ${state.match_result?.match_level || 'confirmado'}.`);
+
+      if (!state.final_result) {
+        setProgress('Extraindo informações', 'Lendo somente os dados comprovados na melhor fonte disponível.');
+        state.final_result = await postStage('/api/ai/analyze-product', {
+          mode:'extract', clues, image_hash:state.clues_result?.image_hash, existing_product_id:state.clues_result?.existing_product_id,
+          web_candidates:state.web_result?.candidates || [], ml_candidates:state.ml_result?.candidates || [],
+          search_queries:state.web_result?.queries || [], web_search_model:state.web_result?.model || null
+        }, { stage:'Extraindo informações', timeout:48_000, retries:1 });
+        state.step = 'extracted'; state = writePipeline(state);
+      }
+
+      applyFinalPayload(state.final_result);
+      state.completed = true; state.step = 'completed'; writePipeline(state);
+    } catch (error) {
+      state.error = { stage:error?.stage || state.step || 'processamento', message:error?.message || 'Erro desconhecido' };
+      state.step = 'error'; writePipeline(state);
+      recoverableError(error);
+    } finally { busy = false; }
   }
 
   async function analyze(file) {
     if (!file || busy) return;
-    busy = true;
-    aiData = null;
-    window.__anvAiProduct = null;
-    setPanel('<b style="color:#111">Analisando produto pela foto…</b><br>Identificando somente informações comprováveis.');
+    lastSelectedFile = file;
+    setProgress('Lendo a foto', 'Preparando a imagem para identificação.');
     try {
       lastPhotoDataUrl = await imageToDataURL(file);
-      const payload = await analyzeData(lastPhotoDataUrl, file.name);
-      aiData = payload;
-      window.__anvAiProduct = payload;
-      fill('title', payload.name, 0.62, 'name');
-      fill('brand', payload.brand, 0.90, 'brand');
-      fill('model', payload.model, 0.92, 'model');
-      fill('material', payload.material, 0.82, 'material');
-      renderResult(payload);
-    } catch (error) {
-      setPanel(`<span style="color:#991b1b"><b>Análise automática não concluída.</b> ${esc(error?.message || 'Tente novamente.')}</span><br>O cadastro manual continua disponível.`);
-    } finally { busy = false; }
+      clearPipeline();
+      await runPipeline(lastPhotoDataUrl, file.name, null);
+    } catch (error) { recoverableError(Object.assign(error || new Error('Falha ao ler a foto'), { stage:'Lendo a foto' })); }
   }
 
   function bindPhoto() {
     const photo = document.getElementById('photo');
-    if (!photo || photo.dataset.anvAiBound === '1') return;
-    photo.dataset.anvAiBound = '1';
-    photo.addEventListener('change', () => {
-      const file = photo.files && photo.files[0];
-      if (file) analyze(file);
-    });
+    if (!photo) return;
+    if (photo.dataset.anvAiBound !== '1') {
+      photo.dataset.anvAiBound = '1';
+      photo.addEventListener('change', () => {
+        const file = photo.files && photo.files[0];
+        if (file) analyze(file);
+      });
+    }
+    if (!resumeStarted && !busy && !photo.files?.length) {
+      const saved = readPipeline();
+      if (saved?.image_data_url && !saved.completed && saved.step !== 'pending') {
+        resumeStarted = true;
+        setTimeout(() => runPipeline(saved.image_data_url, saved.filename || 'produto.jpg', saved), 0);
+      }
+    }
   }
 
   async function ops(body) {

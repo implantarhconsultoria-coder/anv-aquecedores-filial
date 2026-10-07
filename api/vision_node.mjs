@@ -10,6 +10,10 @@ const EXTRACT_MODEL = 'openai/gpt-5-mini';
 const WEB_SEARCH_MODEL = 'openai/gpt-5-mini';
 const AI_GATEWAY = 'https://ai-gateway.vercel.sh';
 const CACHE_DAYS = 30;
+const AI_TIMEOUT_MS = 28_000;
+const WEB_TIMEOUT_MS = 42_000;
+const SOURCE_TIMEOUT_MS = 12_000;
+const MAX_GATEWAY_ATTEMPTS = 2;
 
 const VISION_PROMPT = `Você é a etapa de IDENTIFICAÇÃO BÁSICA da ANV Filial Digital.
 Analise a imagem SOMENTE para obter pistas verificáveis que ajudem a localizar o produto exato na internet.
@@ -177,6 +181,34 @@ function identifiersFrom(clues = {}) {
   };
 }
 
+
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function timedFetch(url, options = {}, timeoutMs = 30_000, timeoutCode = 'request_timeout') {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      const err = new Error(timeoutCode);
+      err.retryable = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function markStageError(error, stage, retryable = true) {
+  if (!error) error = new Error('unknown_error');
+  if (!error.stage) error.stage = stage;
+  if (error.retryable === undefined) error.retryable = retryable;
+  return error;
+}
+
 function extractJson(text) {
   const s = String(text || '').trim();
   const tries = [s, s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')];
@@ -189,29 +221,42 @@ function extractJson(text) {
   throw new Error('model_invalid_json');
 }
 
-async function gatewayChatJson(model, messages, maxTokens = 1800) {
+async function gatewayChatJson(model, messages, maxTokens = 1800, stage = 'ia') {
   const token = await gatewayToken();
-  if (!token) throw new Error('gateway_token_unavailable');
-  const response = await fetch(`${AI_GATEWAY}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, response_format: { type: 'json_object' }, max_completion_tokens: maxTokens })
-  });
-  const raw = await response.text();
-  if (!response.ok) {
-    const e = new Error('gateway_error'); e.status = response.status; e.detail = raw.slice(0, 1200); throw e;
+  if (!token) throw markStageError(new Error('gateway_token_unavailable'), stage, false);
+  let lastError = null;
+  for (let attempt = 1; attempt <= MAX_GATEWAY_ATTEMPTS; attempt++) {
+    try {
+      const response = await timedFetch(`${AI_GATEWAY}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages, response_format: { type: 'json_object' }, max_completion_tokens: maxTokens })
+      }, AI_TIMEOUT_MS, 'gateway_timeout');
+      const raw = await response.text();
+      if (!response.ok) {
+        const e = new Error('gateway_error'); e.status = response.status; e.detail = raw.slice(0, 1200); throw e;
+      }
+      let envelope;
+      try { envelope = JSON.parse(raw); }
+      catch { const e = new Error('model_invalid_envelope'); e.detail = raw.slice(0, 500); throw e; }
+      const content = envelope?.choices?.[0]?.message?.content;
+      if (!content) throw new Error('empty_model_response');
+      return extractJson(content);
+    } catch (error) {
+      lastError = markStageError(error, stage, !['gateway_token_unavailable'].includes(error?.message));
+      const retryable = ['gateway_timeout','gateway_error','model_invalid_envelope','model_invalid_json','empty_model_response'].includes(error?.message);
+      if (attempt < MAX_GATEWAY_ATTEMPTS && retryable) { await sleep(300 * attempt); continue; }
+      throw lastError;
+    }
   }
-  const envelope = extractJson(raw);
-  const content = envelope?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('empty_model_response');
-  return extractJson(content);
+  throw lastError || markStageError(new Error('gateway_error'), stage);
 }
 
 async function analyzeImageClues(imageDataUrl) {
   return normalizeClues(await gatewayChatJson(VISION_MODEL, [{ role: 'user', content: [
     { type: 'text', text: VISION_PROMPT },
     { type: 'image_url', image_url: { url: imageDataUrl, detail: 'high' } }
-  ] }], 1200));
+  ] }], 1600, 'identificando_pistas'));
 }
 
 function buildSearchQueries(clues) {
@@ -305,7 +350,11 @@ function cleanCandidate(c) {
     description: cleanText(c?.description, 600),
     image_url: cleanText(c?.image_url, 1200),
     specifications: c?.specifications && typeof c.specifications === 'object' ? c.specifications : {},
-    evidence: cleanArray(c?.evidence, 12, 250)
+    evidence: cleanArray(c?.evidence, 12, 250),
+    item_id: cleanText(c?.item_id || c?.marketplace?.item_id, 80) || null,
+    permalink: cleanText(c?.permalink || c?.url, 1200) || null,
+    category_id: cleanText(c?.category_id || c?.marketplace?.category_id, 80) || null,
+    marketplace: c?.marketplace && typeof c.marketplace === 'object' ? c.marketplace : null
   };
 }
 
@@ -353,43 +402,56 @@ function chooseMatch(candidates, clues) {
   };
 }
 
-async function webResearch(clues) {
+async function webResearchOnce(clues) {
   const queries = buildSearchQueries(clues);
   if (!queries.length) return { candidates: [], queries };
   const token = await gatewayToken();
-  if (!token) throw new Error('gateway_token_unavailable');
-  const prompt = `Localize na internet o produto exato a partir destas pistas de uma foto.\nPISTAS: ${JSON.stringify(identifiersFrom(clues))}\nCONSULTAS PRIORITÁRIAS: ${JSON.stringify(queries)}\n\nUse busca web real. Pesquise de forma progressiva e ampla, não apenas Mercado Livre. Priorize fabricante, catálogo oficial, distribuidor oficial, revendedor técnico e loja especializada. Não aceite similaridade visual isolada. Código/EAN/modelo/medida divergente deve ser tratado como conflito.\nRetorne ao final SOMENTE um JSON válido neste formato:\n{\"candidates\":[{\"url\":\"https://...\",\"domain\":\"...\",\"title\":\"...\",\"name\":\"...\",\"source_type\":\"manufacturer|official_catalog|authorized_distributor|technical_reseller|specialized_store|ecommerce|marketplace|other\",\"manufacturer\":null,\"brand\":null,\"model\":null,\"code\":null,\"part_number\":null,\"ean\":null,\"description\":\"fatos curtos\",\"image_url\":null,\"specifications\":{},\"evidence\":[\"evidência objetiva\"]}]}\nInclua até 10 candidatos úteis, sem inventar URLs ou fatos.`;
-  const r = await fetch(`${AI_GATEWAY}/v1/responses`, {
+  if (!token) throw markStageError(new Error('gateway_token_unavailable'), 'pesquisa_web', false);
+  const prompt = `Localize na internet o produto exato a partir destas pistas de uma foto.
+PISTAS: ${JSON.stringify(identifiersFrom(clues))}
+CONSULTAS PRIORITÁRIAS: ${JSON.stringify(queries)}
+
+Use busca web real. Pesquise de forma progressiva e ampla, não apenas Mercado Livre. Priorize fabricante, catálogo oficial, distribuidor oficial, revendedor técnico e loja especializada. Não aceite similaridade visual isolada. Código/EAN/modelo/medida divergente deve ser tratado como conflito.
+Retorne ao final SOMENTE um JSON válido neste formato:
+{\"candidates\":[{\"url\":\"https://...\",\"domain\":\"...\",\"title\":\"...\",\"name\":\"...\",\"source_type\":\"manufacturer|official_catalog|authorized_distributor|technical_reseller|specialized_store|ecommerce|marketplace|other\",\"manufacturer\":null,\"brand\":null,\"model\":null,\"code\":null,\"part_number\":null,\"ean\":null,\"description\":\"fatos curtos\",\"image_url\":null,\"specifications\":{},\"evidence\":[\"evidência objetiva\"]}]}
+Inclua até 10 candidatos úteis, sem inventar URLs ou fatos.`;
+  const r = await timedFetch(`${AI_GATEWAY}/v1/responses`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: WEB_SEARCH_MODEL,
-      input: prompt,
-      tools: [{ type: 'web_search' }],
-      tool_choice: 'auto'
-    })
-  });
+    body: JSON.stringify({ model: WEB_SEARCH_MODEL, input: prompt, tools: [{ type: 'web_search' }], tool_choice: 'auto' })
+  }, WEB_TIMEOUT_MS, 'web_search_timeout');
   const raw = await r.text();
   if (!r.ok) {
-    const e = new Error(`web_search_${r.status}`);
-    e.status = r.status;
-    e.detail = raw.slice(0, 1200);
-    throw e;
+    const e = new Error(`web_search_${r.status}`); e.status = r.status; e.detail = raw.slice(0, 1200); throw e;
   }
-  const envelope = extractJson(raw);
+  let envelope;
+  try { envelope = JSON.parse(raw); }
+  catch { const e = new Error('web_search_invalid_envelope'); e.detail = raw.slice(0, 500); throw e; }
   const parts = [];
   if (typeof envelope?.output_text === 'string' && envelope.output_text.trim()) parts.push(envelope.output_text);
   for (const item of Array.isArray(envelope?.output) ? envelope.output : []) {
     if (typeof item?.text === 'string') parts.push(item.text);
-    for (const c of Array.isArray(item?.content) ? item.content : []) {
-      if (['output_text', 'text'].includes(c?.type) && typeof c?.text === 'string') parts.push(c.text);
-    }
+    for (const c of Array.isArray(item?.content) ? item.content : []) if (['output_text','text'].includes(c?.type) && typeof c?.text === 'string') parts.push(c.text);
   }
   const text = parts.join('\n').trim();
   if (!text) throw new Error('web_search_empty');
   const parsed = extractJson(text);
   const candidates = (Array.isArray(parsed?.candidates) ? parsed.candidates : []).map(cleanCandidate).filter(x => x.url);
   return { candidates, queries, model: WEB_SEARCH_MODEL };
+}
+
+async function webResearch(clues) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= MAX_GATEWAY_ATTEMPTS; attempt++) {
+    try { return await webResearchOnce(clues); }
+    catch (error) {
+      lastError = markStageError(error, 'pesquisa_web');
+      const retryable = ['web_search_timeout','web_search_invalid_envelope','web_search_empty','model_invalid_json'].includes(error?.message) || String(error?.message || '').startsWith('web_search_5');
+      if (attempt < MAX_GATEWAY_ATTEMPTS && retryable) { await sleep(350 * attempt); continue; }
+      throw lastError;
+    }
+  }
+  throw lastError || markStageError(new Error('web_search_failed'), 'pesquisa_web');
 }
 
 function isPrivateIp(address) {
@@ -432,7 +494,7 @@ async function safeFetchPage(url, maxRedirects = 3) {
   let current = (await validatePublicUrl(url)).toString();
   for (let i = 0; i <= maxRedirects; i++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
+    const timer = setTimeout(() => controller.abort(), SOURCE_TIMEOUT_MS);
     let r;
     try { r = await fetch(current, { redirect: 'manual', signal: controller.signal, headers: { 'User-Agent': 'ANVProductResearch/1.0 (+product-data-validation)', Accept: 'text/html,application/xhtml+xml' } }); }
     finally { clearTimeout(timer); }
@@ -484,12 +546,49 @@ function extractPageEvidence(page) {
   return { title: cleanText(title, 350), description: cleanText(description, 1000), text: plain, image_urls: Array.from(new Set(images.filter(Boolean))).slice(0, 8) };
 }
 
+function factsFromMarketplaceCandidate(candidate, clues) {
+  const specs = candidate?.specifications && typeof candidate.specifications === 'object' ? candidate.specifications : {};
+  const lookup = (...names) => {
+    const wanted = names.map(norm);
+    for (const [k, v] of Object.entries(specs)) if (wanted.some(n => norm(k).includes(n)) && cleanText(v, 400)) return cleanText(v, 400);
+    return null;
+  };
+  const facts = {
+    name: candidate.name || candidate.title || clues.name_hint || clues.product_type || null,
+    brand: candidate.brand || clues.brand || lookup('marca'),
+    manufacturer: candidate.manufacturer || clues.manufacturer || null,
+    line: clues.line || lookup('linha'),
+    model: candidate.model || clues.model || lookup('modelo'),
+    code: candidate.code || clues.code || lookup('codigo'),
+    sku: clues.sku || null,
+    part_number: candidate.part_number || clues.part_number || lookup('part number','mpn'),
+    ean: candidate.ean || clues.ean || lookup('gtin','ean'),
+    description: cleanText(candidate.description || candidate.title, 1200) || null,
+    measurements: clues.measurements || [],
+    material: lookup('material'),
+    application: lookup('aplicacao','aplicação','uso'),
+    compatibility: lookup('compatibilidade','compativel','compatível'),
+    specifications: specs,
+    unit: lookup('unidade'),
+    quantity: lookup('quantidade','unidades'),
+    warranty: lookup('garantia'),
+    technical_details: Object.keys(specs).length ? JSON.stringify(specs) : null,
+    image_urls: cleanArray(candidate?.marketplace?.pictures || [candidate.image_url], 10, 1200),
+    category_terms: [candidate.category_id].filter(Boolean),
+    warnings: []
+  };
+  return crossCheckFacts(facts, clues);
+}
+
 async function findUsableSource(match) {
   const candidates = [match.selected, ...(match.candidates || [])].filter(Boolean);
   const seen = new Set();
   for (const c of candidates) {
     if (!c.url || seen.has(c.url)) continue; seen.add(c.url);
     if (match.selected && c !== match.selected && !sameIdentity(match.selected, c)) continue;
+    if (String(c.source_type || '').toLowerCase() === 'marketplace' && c.marketplace) {
+      return { candidate: c, page: { url: c.url, html: '', contentType: 'application/json' }, evidence: { title: c.title, description: c.description, text: JSON.stringify(c.specifications || {}), image_urls: c.marketplace?.pictures || [c.image_url].filter(Boolean) }, structuredMarketplace: true };
+    }
     try {
       const page = await safeFetchPage(c.url);
       return { candidate: c, page, evidence: extractPageEvidence(page) };
@@ -499,8 +598,9 @@ async function findUsableSource(match) {
 }
 
 async function extractFactsFromSource(source, clues) {
+  if (source?.structuredMarketplace) return factsFromMarketplaceCandidate(source.candidate, clues);
   const prompt = `Extraia somente fatos comprovados da página abaixo para o cadastro ANV. Cruze com os identificadores vistos na imagem. Se houver conflito forte, não use o dado conflitante. Não copie texto comercial longo: produza uma descrição própria, curta e factual. Nunca invente campo ausente.\nIDENTIFICADORES DA IMAGEM: ${JSON.stringify(identifiersFrom(clues))}\nURL: ${source.page.url}\nTÍTULO/META: ${JSON.stringify({ title: source.evidence.title, description: source.evidence.description })}\nCONTEÚDO VISÍVEL DA PÁGINA: ${source.evidence.text}\nRetorne SOMENTE JSON válido:\n{\"name\":null,\"brand\":null,\"manufacturer\":null,\"line\":null,\"model\":null,\"code\":null,\"sku\":null,\"part_number\":null,\"ean\":null,\"description\":null,\"measurements\":[],\"material\":null,\"application\":null,\"compatibility\":null,\"specifications\":{},\"unit\":null,\"quantity\":null,\"warranty\":null,\"technical_details\":null,\"image_urls\":[],\"category_terms\":[],\"warnings\":[]}`;
-  const result = await gatewayChatJson(EXTRACT_MODEL, [{ role: 'user', content: prompt }], 2200);
+  const result = await gatewayChatJson(EXTRACT_MODEL, [{ role: 'user', content: prompt }], 2400, 'extraindo_informacoes');
   const facts = {
     name: cleanText(result.name, 250) || null,
     brand: cleanText(result.brand, 160) || null,
@@ -667,6 +767,82 @@ async function handleManualUrl(body) {
   return makeConfirmedResponse({ clues, facts, source, match: manualMatch, research: { queries: [], model: null }, existing: null, imageHash: null });
 }
 
+
+function mergeCandidates(webCandidates = [], mlCandidates = []) {
+  const merged = [];
+  const seen = new Set();
+  for (const raw of [...webCandidates, ...mlCandidates]) {
+    const c = cleanCandidate(raw);
+    if (!c.url) continue;
+    const key = c.item_id ? `item:${c.item_id}` : `url:${c.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key); merged.push(c);
+  }
+  return merged.slice(0, 20);
+}
+
+function marketplaceReference(match) {
+  if (!match?.selected) return null;
+  const candidate = (match.candidates || []).find(c => String(c.source_type || '').toLowerCase() === 'marketplace' && sameIdentity(match.selected, c));
+  if (!candidate) return null;
+  return {
+    item_id: candidate.item_id || candidate.marketplace?.item_id || null,
+    permalink: candidate.permalink || candidate.url || null,
+    title: candidate.title || null,
+    category_id: candidate.category_id || candidate.marketplace?.category_id || null,
+    attributes: candidate.marketplace?.attributes || candidate.specifications || {},
+    condition: candidate.marketplace?.condition || null,
+    listing_type_id: candidate.marketplace?.listing_type_id || null,
+    pictures: candidate.marketplace?.pictures || [],
+    score: candidate.score || null,
+    evidence: candidate.evidence || []
+  };
+}
+
+async function processCluesStage(image) {
+  const imageHash = crypto.createHash('sha256').update(image).digest('hex');
+  const clues = await analyzeImageClues(image);
+  const existing = await findExisting(clues).catch(() => null);
+  if (existing && cacheFresh(existing) && (clues.ean || clues.part_number || clues.code || clues.sku || clues.reference)) {
+    return { stage: 'clues', clues, image_hash: imageHash, existing_product_id: existing.id, cached_result: responseFromCached(existing, clues, imageHash) };
+  }
+  return { stage: 'clues', clues, image_hash: imageHash, existing_product_id: existing?.id || null, cached_result: null };
+}
+
+async function processWebStage(rawClues) {
+  const clues = normalizeClues(rawClues || {});
+  const research = await webResearch(clues);
+  return { stage: 'web', ...research };
+}
+
+function processMatchStage(body) {
+  const clues = normalizeClues(body?.clues || body?.identifiers || {});
+  const combined = mergeCandidates(body?.web_candidates || [], body?.ml_candidates || []);
+  const match = chooseMatch(combined, clues);
+  if (!match.selected) {
+    const pending = makePendingResponse(clues, match, { queries: body?.search_queries || [], model: body?.web_search_model || null }, null, body?.image_hash || null, body?.ml_warning ? [body.ml_warning] : []);
+    pending.marketplace_reference = null;
+    return { stage: 'match', confirmed: false, result: pending, candidates: match.candidates, match_level: match.match_level, match_confidence: match.confidence };
+  }
+  return { stage: 'match', confirmed: true, selected: match.selected, candidates: match.candidates, match_level: match.match_level, match_confidence: match.confidence, marketplace_reference: marketplaceReference(match) };
+}
+
+async function processExtractStage(body) {
+  const clues = normalizeClues(body?.clues || body?.identifiers || {});
+  const combined = mergeCandidates(body?.web_candidates || [], body?.ml_candidates || []);
+  const match = chooseMatch(combined, clues);
+  const existing = body?.existing_product_id ? { id: body.existing_product_id } : await findExisting(clues).catch(() => null);
+  if (!match.selected) return makePendingResponse(clues, match, { queries: body?.search_queries || [], model: body?.web_search_model || null }, existing, body?.image_hash || null);
+  let source;
+  try { source = await findUsableSource(match); }
+  catch { return makePendingResponse(clues, { ...match, status: 'PRODUTO_NAO_CONFIRMADO', match_level: 'insuficiente', confidence: Math.min(match.confidence, 0.69), selected: null }, { queries: body?.search_queries || [], model: body?.web_search_model || null }, existing, body?.image_hash || null, ['Foram encontrados candidatos, mas nenhuma fonte confiável pôde ser acessada para validar os dados.']); }
+  const facts = await extractFactsFromSource(source, clues);
+  const result = makeConfirmedResponse({ clues, facts, source, match, research: { queries: body?.search_queries || [], model: body?.web_search_model || null }, existing, imageHash: body?.image_hash || null });
+  result.marketplace_reference = marketplaceReference(match);
+  result.marketplace_candidates = (match.candidates || []).filter(c => String(c.source_type || '').toLowerCase() === 'marketplace').slice(0, 6);
+  return result;
+}
+
 async function processImage(image) {
   const imageHash = crypto.createHash('sha256').update(image).digest('hex');
   const clues = await analyzeImageClues(image);
@@ -699,16 +875,21 @@ export default async function handler(req, res) {
   body = body || {};
   try {
     if (body.manual_url) return json(res, 200, await handleManualUrl(body));
+    const mode = String(body.mode || body.stage || 'full').toLowerCase();
+    if (mode === 'web') return json(res, 200, await processWebStage(body.clues || body.identifiers || {}));
+    if (mode === 'match') return json(res, 200, processMatchStage(body));
+    if (mode === 'extract') return json(res, 200, await processExtractStage(body));
     const image = String(body.image_data_url || '').trim();
-    if (!image.startsWith('data:image/') || !image.includes(';base64,')) return json(res, 400, { detail: 'Imagem inválida' });
-    if (image.length > 6_000_000) return json(res, 413, { detail: 'Imagem muito grande' });
+    if (!image.startsWith('data:image/') || !image.includes(';base64,')) return json(res, 400, { detail: 'Imagem inválida', stage: 'lendo_foto', retryable: true });
+    if (image.length > 6_000_000) return json(res, 413, { detail: 'Imagem muito grande', stage: 'lendo_foto', retryable: true });
+    if (mode === 'clues') return json(res, 200, await processCluesStage(image));
     return json(res, 200, await processImage(image));
   } catch (e) {
-    console.error('[ANV research]', { stage: e?.message, status: e?.status, detail: cleanText(e?.detail, 500) });
-    if (e?.message === 'gateway_token_unavailable') return json(res, 503, { detail: 'Autenticação de IA indisponível' });
-    if (e?.message === 'gateway_error') return json(res, 502, { detail: { message: 'Falha no AI Gateway', status: e.status } });
-    if (e?.message === 'unsafe_url') return json(res, 400, { detail: 'URL não permitida para pesquisa' });
-    if (String(e?.message || '').startsWith('source_http_') || String(e?.message || '').startsWith('web_search_') || ['source_not_html', 'no_accessible_source', 'web_search_failed', 'web_search_empty'].includes(e?.message)) return json(res, 502, { detail: `Falha na etapa de pesquisa/fonte: ${e.message}` });
-    return json(res, 502, { detail: `Falha na etapa ${e?.message || 'desconhecida'}` });
+    console.error('[ANV research]', { stage: e?.stage || e?.message, code: e?.message, status: e?.status, retryable: e?.retryable, detail: cleanText(e?.detail, 500) });
+    if (e?.message === 'gateway_token_unavailable') return json(res, 503, { detail: 'Autenticação de IA indisponível', stage: e?.stage || 'ia', retryable: false });
+    if (e?.message === 'gateway_error') return json(res, 502, { detail: { message: 'Falha no AI Gateway', status: e.status }, stage: e?.stage || 'ia', retryable: true });
+    if (e?.message === 'unsafe_url') return json(res, 400, { detail: 'URL não permitida para pesquisa', stage: e?.stage || 'fonte', retryable: false });
+    if (String(e?.message || '').startsWith('source_http_') || String(e?.message || '').startsWith('web_search_') || ['source_not_html', 'no_accessible_source', 'web_search_failed', 'web_search_empty','web_search_timeout','web_search_invalid_envelope'].includes(e?.message)) return json(res, 502, { detail: `Falha na etapa de pesquisa/fonte: ${e.message}`, stage: e?.stage || 'pesquisa_web', retryable: true });
+    return json(res, 502, { detail: `Falha na etapa ${e?.stage || e?.message || 'desconhecida'}: ${e?.message || 'erro'}`, stage: e?.stage || 'desconhecida', retryable: e?.retryable !== false });
   }
 }

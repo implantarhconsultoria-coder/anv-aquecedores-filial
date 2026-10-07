@@ -4,6 +4,8 @@
   const previousFetch = window.fetch.bind(window);
   const STORAGE_KEY = 'anv-image-research-v2';
   const STORAGE_TTL_MS = 12 * 60 * 60 * 1000;
+  const PROGRESS_KEY = 'anv-image-progress-v1';
+  const PROGRESS_TTL_MS = 30 * 60 * 1000;
   let currentResearch = null;
   let observedResult = window.__anvAiProduct || null;
   let lastPhotoDataUrl = null;
@@ -76,21 +78,29 @@
     stageTimers = [];
   }
 
-  function startStages() {
+  function saveProgress(stage, detail = '', tone = 'normal') {
+    try { localStorage.setItem(PROGRESS_KEY, JSON.stringify({ stage, detail, tone, updated_at: Date.now() })); } catch (_) {}
+  }
+
+  function loadProgress() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(PROGRESS_KEY) || 'null');
+      if (!raw || !Number(raw.updated_at) || Date.now() - Number(raw.updated_at) > PROGRESS_TTL_MS) return null;
+      return raw;
+    } catch { return null; }
+  }
+
+  function updateProgress(stage, detail = '', tone = 'normal') {
     clearStages();
-    const stages = [
-      [0, 'Analisando imagem', 'Extraindo somente pistas visíveis.'],
-      [1600, 'Identificando produto', 'Lendo marca, código, EAN, modelo e referências.'],
-      [4200, 'Pesquisando na internet', 'Buscando correspondências em fontes públicas confiáveis.'],
-      [7600, 'Comparando resultados', 'Conferindo códigos, modelos, medidas e divergências.'],
-      [11200, 'Fonte encontrada', 'Validando a página do produto correto.'],
-      [14500, 'Extraindo informações', 'Lendo somente dados comprovados na fonte selecionada.']
-    ];
-    for (const [delay, title, sub] of stages) {
-      stageTimers.push(setTimeout(() => {
-        if (!currentResearch) setPanel(`<b style="color:#111">${esc(title)}</b><br>${esc(sub)}`);
-      }, delay));
-    }
+    saveProgress(stage, detail, tone);
+    const color = tone === 'error' ? '#991b1b' : tone === 'ok' ? '#166534' : '#111';
+    setPanel(`<b style="color:${color}">${esc(stage)}</b>${detail ? `<br>${esc(detail)}` : ''}`);
+  }
+
+  window.__anvResearchProgress = updateProgress;
+
+  function startStages() {
+    updateProgress('Lendo a foto', 'Preparando a imagem para iniciar a identificação.');
   }
 
   function applyToForm(data) {
@@ -171,6 +181,7 @@
     saveResearchState(data);
     renderResearch(data);
     if (data.research_status === 'CONFIRMADO') {
+      saveProgress('Produto encontrado', `${data.name || 'Produto'} · correspondência ${data.match_level || 'confirmada'}.`, 'ok');
       try { await ensureProductPersisted(data); }
       catch (e) { setPersistenceStatus(`Produto identificado, mas a gravação automática falhou: ${e?.message || 'erro desconhecido'}. O botão Salvar continua disponível.`, '#991b1b'); }
     }
@@ -233,6 +244,10 @@
       photo.dataset.anvResearchRestored = '1';
       const restored = loadResearchState();
       if (restored) handleResearchResult(restored).catch(() => {});
+      else {
+        const progress = loadProgress();
+        if (progress) updateProgress(progress.stage, progress.detail, progress.tone);
+      }
     }
   }
 
@@ -334,11 +349,14 @@
     }
   }
 
-  async function runPreflight(productId) {
+  async function runPreflight(productId, research = null) {
     if (!productId) return null;
+    const mlRef = research?.marketplace_reference || null;
+    const categoryId = txt(mlRef?.category_id) || null;
+    const attributes = mlRef?.attributes && typeof mlRef.attributes === 'object' ? mlRef.attributes : {};
     const r = await previousFetch('/api/marketplace/preflight', {
       method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ product_id:productId, category_id:null, attributes:{}, images:[] })
+      body:JSON.stringify({ product_id:productId, category_id:categoryId, attributes, images:[] })
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) return { ready:false, blockers:[typeof data?.detail === 'string' ? data.detail : (data?.detail?.message || `Pré-validação indisponível (${r.status})`)] };
@@ -355,7 +373,7 @@
     if (persistencePromise && persistenceKey === key) return persistencePromise;
     persistenceKey = key;
     persistencePromise = (async () => {
-      setPersistenceStatus('Salvando produto confirmado no catálogo ANV…');
+      updateProgress('Verificando cadastro ANV', 'Conferindo EAN, código, SKU, part number e marca + modelo para evitar duplicidade.');
       const body = technicalProductBody(research);
       const products = await catalog();
       const duplicate = findDuplicate(products, body, research);
@@ -384,20 +402,25 @@
       research.existing_product_id = productId;
       research.catalog_persisted = true;
       research.product_action = action;
+      updateProgress('Buscando imagens', 'Preservando a foto original e importando somente imagens permitidas do produto confirmado.');
       await persistResearch(productId, research, true);
 
-      const preflight = await runPreflight(productId).catch(e => ({ ready:false, blockers:[e?.message || 'Pré-validação indisponível'] }));
+      updateProgress('Preparando anúncio', 'Consultando categoria, atributos obrigatórios e preflight do Mercado Livre.');
+      const preflight = await runPreflight(productId, research).catch(e => ({ ready:false, blockers:[e?.message || 'Pré-validação indisponível'] }));
       research.preflight = preflight;
       research.preflight_ready = !!preflight?.ready;
       saveResearchState(research);
       window.__anvAiProduct = research;
       currentResearch = research;
 
+      renderResearch(research);
       if (preflight?.ready) {
-        setPersistenceStatus('PRONTO PARA PUBLICAR');
+        setPersistenceStatus('Pronto para revisar/publicar');
+        saveProgress('Pronto para revisar/publicar', 'Produto confirmado, salvo e aprovado no preflight.', 'ok');
       } else {
         const blocker = Array.isArray(preflight?.blockers) && preflight.blockers.length ? ` Pendência: ${preflight.blockers[0]}` : '';
         setPersistenceStatus(`Produto ${action === 'created' ? 'criado' : 'atualizado'} no catálogo ANV. Pré-validação concluída.${blocker}`);
+        saveProgress('Preparando anúncio', `Pré-validação concluída.${blocker}`, blocker ? 'error' : 'normal');
       }
       return productId;
     })().finally(() => {

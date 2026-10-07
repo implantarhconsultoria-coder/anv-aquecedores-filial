@@ -105,7 +105,7 @@ test('cenário 7: preço e estoque externos não entram no produto técnico', ()
 
 test('cenário 8: fluxo confirmado persiste pesquisa, foto e inicia preflight sem publicar', () => {
   assert.match(researchSource, /await persistResearch\(productId, research, true\)/);
-  assert.match(researchSource, /await runPreflight\(productId\)/);
+  assert.match(researchSource, /await runPreflight\(productId, research\)/);
   assert.doesNotMatch(researchSource, /\/api\/integrations\/mercado-livre\/connect/);
   assert.doesNotMatch(researchSource, /\/api\/marketplace\/publish/);
 });
@@ -127,3 +127,4 @@ test('match provável exige validação cruzada em domínio diferente', () => {
   assert.equal(two.match_level, 'provavel');
   assert.match(two.selected.evidence.join(' '), /Validação cruzada/);
 });
+await import('./image_research_flow.test.mjs');
