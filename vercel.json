@@ -6,6 +6,7 @@
     "api/guard.py": { "maxDuration": 30 },
     "api/page.py": { "maxDuration": 20 },
     "api/vision_node.mjs": { "maxDuration": 60 },
+    "api/product_research.mjs": { "maxDuration": 120 },
     "api/anv_ops.mjs": { "maxDuration": 30 },
     "api/publish_safe.py": { "maxDuration": 60 }
   },
@@ -39,6 +40,7 @@
     { "source": "/desktop", "destination": "/api/page?mode=desktop" },
     { "source": "/mobile", "destination": "/api/page?mode=mobile" },
     { "source": "/api/ai/analyze-product", "destination": "/api/vision_node" },
+    { "source": "/api/ai/product-research", "destination": "/api/product_research" },
     { "source": "/api/anv-ops", "destination": "/api/anv_ops" },
     { "source": "/api/marketplace/publish", "destination": "/api/publish_safe" },
     { "source": "/api/(.*)", "destination": "/api/guard" },

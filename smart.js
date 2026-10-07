@@ -11,110 +11,100 @@
   const text = v => v === null || v === undefined ? '' : String(v).trim();
   const esc = v => text(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-  function confidenceFor(key, data) {
-    const n = Number(data?.field_confidence?.[key]);
-    return Number.isFinite(n) ? n : Number(data?.confidence || 0);
+  let research = null;
+  let photoRevision = 0;
+  let manualRegistration = false;
+  let importedValues = {};
+  const extraFields = ['code','application','compatibility','description','technical_details','voltage','color','category','gtin','dimensions','weight','references'];
+  const labels = {code:'Código / part number',application:'Aplicação',compatibility:'Compatibilidade',description:'Descrição',technical_details:'Características técnicas',voltage:'Tensão',color:'Cor',category:'Categoria da fonte',gtin:'GTIN',dimensions:'Dimensões do produto (fonte)',weight:'Peso do produto (fonte)',references:'Referências'};
+  function safeURL(value) {
+    try {const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password?u.href:'';} catch{return '';}
   }
-
-  function fill(id, value, minConfidence, confidenceKey) {
-    const el = document.getElementById(id);
-    const valueText = text(value);
-    if (!el || !valueText || text(el.value)) return;
-    if (confidenceFor(confidenceKey || id, aiData) < minConfidence) return;
-    el.value = valueText;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+  function clearImported() {
+    for(const [id,value]of Object.entries(importedValues)) {const el=document.getElementById(id);if(el&&el.value===value)el.value='';}
+    importedValues={};document.getElementById('anv-imported-review')?.remove();
+    research=null;aiData=null;window.__anvAiProduct=null;
   }
-
   function getPanel(photo) {
-    let panel = document.getElementById('anv-ai-photo-result');
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.id = 'anv-ai-photo-result';
-      panel.style.cssText = 'margin-top:10px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:11px;background:#fafafa;font-size:13px;line-height:1.45;color:#4b5563';
-      photo.insertAdjacentElement('afterend', panel);
-    }
+    let panel=document.getElementById('anv-ai-photo-result');
+    if(!panel){panel=document.createElement('div');panel.id='anv-ai-photo-result';panel.style.cssText='grid-column:1/-1;margin-top:10px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:11px;background:#fafafa;font-size:13px;line-height:1.45;color:#4b5563';panel.setAttribute('aria-live','polite');photo.insertAdjacentElement('afterend',panel);}
     return panel;
   }
-
-  function setPanel(html) {
-    const photo = document.getElementById('photo');
-    if (photo) getPanel(photo).innerHTML = html;
-  }
-
+  function setPanel(html){const photo=document.getElementById('photo');if(photo)getPanel(photo).innerHTML=html;}
   async function imageToDataURL(file) {
-    const raw = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-    try {
-      const img = await loadImage(raw);
-      const maxSide = 1600;
-      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-      if (scale >= 1 && String(raw).length < 3_500_000) return raw;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(img.width * scale));
-      canvas.height = Math.max(1, Math.round(img.height * scale));
-      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL('image/jpeg', 0.88);
-    } catch { return raw; }
+    if(!/^image\/(jpeg|png|webp)$/.test(file.type))throw new Error('Selecione uma foto JPEG, PNG ou WebP.');
+    const raw=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(new Error('Não foi possível abrir a foto.'));r.readAsDataURL(file);});
+    const img=await loadImage(raw);const scale=Math.min(1,1600/Math.max(img.width,img.height));
+    if(scale>=1&&String(raw).length<3500000)return raw;
+    const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+    const out=canvas.toDataURL('image/jpeg',0.88);if(out.length>3500000)throw new Error('A foto ficou muito grande. Envie uma imagem menor.');return out;
   }
-
-  function renderResult(data) {
-    const conf = Math.max(0, Math.min(100, Math.round(Number(data.confidence || 0) * 100)));
-    const details = [
-      data.product_type && `<b>Tipo:</b> ${esc(data.product_type)}`,
-      data.application && `<b>Aplicação:</b> ${esc(data.application)}`,
-      data.compatibility && `<b>Compatibilidade:</b> ${esc(data.compatibility)}`,
-      data.technical_details && `<b>Detalhes:</b> ${esc(data.technical_details)}`,
-      Array.isArray(data.visible_text) && data.visible_text.length ? `<b>Texto/código visível:</b> ${esc(data.visible_text.join(' · '))}` : ''
-    ].filter(Boolean).join('<br>');
-    const pending = Array.isArray(data.needs_confirmation) && data.needs_confirmation.length ? `<div style="margin-top:8px;color:#92400e"><b>Confirmar:</b> ${esc(data.needs_confirmation.join(' · '))}</div>` : '';
-    const warnings = Array.isArray(data.warnings) && data.warnings.length ? `<div style="margin-top:6px;color:#991b1b">${esc(data.warnings.join(' · '))}</div>` : '';
-    setPanel(`<div style="color:#111;font-weight:800;margin-bottom:5px">IA identificou: ${esc(data.name || data.product_type || 'produto')} · confiança ${conf}%</div>${details || 'Imagem analisada.'}${pending}${warnings}<div style="margin-top:7px;color:#6b7280">Só campos sustentados pela foto são preenchidos. O restante fica para confirmação.</div>`);
-  }
-
-  async function analyzeData(imageData, filename = 'produto.jpg') {
-    const response = await nativeFetch('/api/ai/analyze-product', {
-      method: 'POST', credentials: 'include', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ image_data_url: imageData, filename })
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(typeof payload?.detail === 'string' ? payload.detail : (payload?.detail?.message || `Erro ${response.status}`));
+  async function researchRequest(body) {
+    const r=await nativeFetch('/api/ai/product-research',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const payload=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(typeof payload.detail==='string'?payload.detail:'Não consegui pesquisar este produto. Tente novamente.');
     return payload;
   }
-
-  async function analyze(file) {
-    if (!file || busy) return;
-    busy = true;
-    aiData = null;
-    window.__anvAiProduct = null;
-    setPanel('<b style="color:#111">Analisando produto pela foto…</b><br>Identificando somente informações comprováveis.');
-    try {
-      lastPhotoDataUrl = await imageToDataURL(file);
-      const payload = await analyzeData(lastPhotoDataUrl, file.name);
-      aiData = payload;
-      window.__anvAiProduct = payload;
-      fill('title', payload.name, 0.62, 'name');
-      fill('brand', payload.brand, 0.90, 'brand');
-      fill('model', payload.model, 0.92, 'model');
-      fill('material', payload.material, 0.82, 'material');
-      renderResult(payload);
-    } catch (error) {
-      setPanel(`<span style="color:#991b1b"><b>Análise automática não concluída.</b> ${esc(error?.message || 'Tente novamente.')}</span><br>O cadastro manual continua disponível.`);
-    } finally { busy = false; }
+  function renderResearch(data,panel,onUse,onRetry,originalImage=null) {
+    const candidates=data.candidates||[];const top=candidates[0];
+    const title=top?.score>=95?'Produto encontrado':top?.score>=80?'Confirme o produto correto':'Não foi possível confirmar com segurança. Envie uma foto da etiqueta, código ou outro ângulo.';
+    const clues=[data.hints?.product_type,...(data.hints?.visible_text||[])].filter(Boolean).join(' · ');
+    panel.innerHTML=`${originalImage?`<img src="${esc(originalImage)}" alt="Foto enviada" style="width:100px;height:100px;object-fit:contain;display:block;margin-bottom:8px">`:""}<b style="color:#111">${esc(title)}</b><p>Pistas visuais: ${esc(clues||'Sem código legível.')}<br>Marca na foto: ${esc(data.hints?.brand||'não confirmada')}</p>${candidates.map((c,i)=>`<div style="border-top:1px solid #ddd;padding-top:12px;margin-top:12px">${i?'<b>Outros resultados encontrados</b><br>':''}${safeURL(c.image_url)?`<img src="${esc(safeURL(c.image_url))}" referrerpolicy="no-referrer" alt="Referência da fonte" style="width:90px;height:90px;object-fit:contain;float:right">`:''}<b>${esc(c.fields?.name||'Referência encontrada')}</b><br>Marca: ${esc(c.fields?.brand||'não informada')}<br>Modelo: ${esc(c.fields?.model||'não informado')}<br>Código: ${esc(c.fields?.code||'não informado')}<br>Correspondência: <b>${Number(c.score)||0}%</b><br>Fonte: ${esc(c.source_title)} · ${esc(c.source_domain)}<br><small>Índice de evidências, não probabilidade de acerto. ${c.evidence?.image_compared?'Imagem da fonte comparada.':'Sem confirmação por imagem da fonte.'}</small><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button type="button" data-use="${esc(c.id)}" class="btn" ${c.score<80?'disabled':''}>USAR ESTE PRODUTO</button><a class="btn ghost" href="${esc(safeURL(c.source_url))}" target="_blank" rel="noopener noreferrer">ABRIR FONTE</a><button type="button" data-reject="${esc(c.id)}" class="btn ghost">NÃO É ESTE</button></div></div>`).join('')}<button type="button" data-retry class="btn ghost" style="margin-top:12px">PESQUISAR NOVAMENTE</button>`;
+    panel.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>onUse(b.dataset.use,b));
+    panel.querySelectorAll('[data-reject]').forEach(b=>b.onclick=()=>{b.closest('div[style*="border-top"]').remove();if(!panel.querySelector('[data-use]'))onRetry();});
+    panel.querySelector('[data-retry]').onclick=onRetry;
   }
-
+  function importFields(data) {
+    const fields=data.imported_fields||{};aiData=fields;window.__anvAiProduct=fields;
+    for(const [key,id]of Object.entries({name:'title',brand:'brand',model:'model',material:'material'})) {
+      const el=document.getElementById(id);if(!el||!fields[key])continue;
+      if(!text(el.value)){el.value=fields[key];importedValues[id]=fields[key];el.dispatchEvent(new Event('input',{bubbles:true}));}
+    }
+    document.getElementById('anv-imported-review')?.remove();
+    const div=document.createElement('div');div.id='anv-imported-review';div.style.cssText='grid-column:1/-1;margin:10px 0';
+    div.innerHTML='<b>Dados importados · revise e edite antes de salvar</b>'+extraFields.filter(k=>fields[k]).map(k=>`<label style="display:block;margin-top:8px">${esc(labels[k])}<textarea id="anv-field-${k}" style="display:block;width:100%;min-height:45px;border:1px solid #ddd;border-radius:10px;padding:10px;font:inherit">${esc(fields[k])}</textarea></label>`).join('');
+    getPanel(document.getElementById('photo')).insertAdjacentElement('afterend',div);
+  }
+  function searchControls(message='Foto enviada. Pesquise para encontrar fontes reais.') {
+    const photo=document.getElementById('photo');if(!photo)return;
+    setPanel(`<b>${esc(message)}</b><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button type="button" id="anv-search-product" class="btn">PESQUISAR PRODUTO</button><button type="button" id="anv-manual-product" class="btn ghost">Cadastrar manualmente</button></div>`);
+    document.getElementById('anv-search-product').onclick=()=>analyze(photo.files?.[0],photo);
+    document.getElementById('anv-manual-product').onclick=()=>{++photoRevision;busy=false;clearImported();manualRegistration=true;setPanel('Cadastro manual selecionado. Preencha apenas os dados que você conhece.');};
+  }
+  async function analyze(file,photo=document.getElementById('photo')) {
+    if(!file||busy)return;
+    const revision=++photoRevision;busy=true;clearImported();manualRegistration=false;
+    const current=()=>revision===photoRevision&&photo===document.getElementById('photo');
+    setPanel('<b style="color:#111">PESQUISANDO PRODUTO...</b><br>Extraindo pistas e consultando fontes reais. Nenhum campo será preenchido antes da sua confirmação.');
+    try {
+      const image=await imageToDataURL(file);if(!current())return;lastPhotoDataUrl=image;
+      const payload=await researchRequest({action:'search',image_data_url:image});if(!current())return;research=payload;
+      renderResearch(payload,getPanel(photo),async(candidateId,button)=>{
+        if(busy||!current())return;busy=true;button.disabled=true;button.textContent='Importando informações...';
+        try {
+          const confirmed=await researchRequest({action:'confirm',research_id:payload.research_id,candidate_id:candidateId});if(!current())return;
+          research=confirmed;importFields(confirmed);
+          const source=confirmed.selected;
+          setPanel(`<b>Produto confirmado · dados importados</b><p>Revise os campos antes de salvar. Preço e estoque continuam sendo os informados por você.</p><a href="${esc(safeURL(source.source_url))}" target="_blank" rel="noopener noreferrer">ABRIR FONTE · ${esc(source.source_title)}</a><div style="display:flex;gap:8px;margin-top:10px"><button type="button" id="anv-edit-import" class="btn ghost">EDITAR</button><button type="button" id="anv-research-again" class="btn ghost">PESQUISAR NOVAMENTE</button></div>`);
+          document.getElementById('anv-research-again').onclick=()=>analyze(photo.files?.[0],photo);
+          document.getElementById('anv-edit-import').onclick=()=>document.getElementById('title')?.focus();
+        }catch(e){if(current())searchControls(e.message);}finally{if(current())busy=false;}
+      },()=>{++photoRevision;busy=false;clearImported();searchControls('Selecione outra foto ou pesquise novamente.');},image);
+    }catch(e){if(current())searchControls(e.message);}finally{if(current())busy=false;}
+  }
   function bindPhoto() {
-    const photo = document.getElementById('photo');
-    if (!photo || photo.dataset.anvAiBound === '1') return;
-    photo.dataset.anvAiBound = '1';
-    photo.addEventListener('change', () => {
-      const file = photo.files && photo.files[0];
-      if (file) analyze(file);
-    });
+    const photo=document.getElementById('photo');if(!photo||photo.dataset.anvAiBound==='1')return;
+    photo.dataset.anvAiBound='1';++photoRevision;busy=false;clearImported();lastPhotoDataUrl=null;manualRegistration=false;currentProductId=null;
+    const save=document.getElementById('save');if(save) {
+      save.textContent='SALVAR PRODUTO';
+      save.addEventListener('click',event=>{
+        if(busy||(photo.files?.length&&!manualRegistration&&research?.status!=='DADOS_IMPORTADOS')) {
+          event.preventDefault();event.stopImmediatePropagation();
+          const msg=document.getElementById('msg');if(msg)msg.textContent=busy?'Aguarde a pesquisa terminar.':'Pesquise e confirme o produto ou escolha cadastrar manualmente.';
+        }
+      },true);
+    }
+    photo.addEventListener('change',()=>{++photoRevision;clearImported();lastPhotoDataUrl=null;manualRegistration=false;busy=false;if(photo.files?.[0])searchControls();else document.getElementById('anv-ai-photo-result')?.remove();});
   }
 
   async function ops(body) {
@@ -161,22 +151,31 @@
     if (method === 'POST' && /\/api\/products(?:\?|$)/.test(url) && typeof init.body === 'string') {
       try {
         const body = JSON.parse(init.body);
-        const f = aiData?.field_confidence || {};
-        if (aiData?.application && Number(f.application || aiData.confidence || 0) >= 0.78) body.application = aiData.application;
-        if (aiData?.compatibility && Number(f.compatibility || aiData.confidence || 0) >= 0.90) body.compatibility = aiData.compatibility;
-        if (aiData?.description) body.description = aiData.description;
-        if (aiData?.technical_details) body.technical_details = aiData.technical_details;
+        if (research?.status === 'DADOS_IMPORTADOS' && !manualRegistration) {
+          for (const key of extraFields) {
+            const el=document.getElementById(`anv-field-${key}`);
+            if(el)body[key]=text(el.value)||null;
+          }
+          const specs=['dimensions','weight','references'].map(k=>{
+            const value=document.getElementById(`anv-field-${k}`)?.value;return text(value)?`${labels[k]}: ${text(value)}`:'';
+          }).filter(Boolean);
+          if(specs.length)body.technical_details=[body.technical_details,...specs].filter(Boolean).join('\n');
+          body.research_id=research.research_id;
+        }
         init = {...init, body:JSON.stringify(body)};
       } catch (_) {}
+      if(!lastPhotoDataUrl&&document.getElementById('photo')?.files?.[0]) {
+        try{lastPhotoDataUrl=await imageToDataURL(document.getElementById('photo').files[0]);}catch(e){return new Response(JSON.stringify({detail:e.message}),{status:400,headers:{'Content-Type':'application/json'}});}
+      }
       const response = await nativeFetch(input, init);
       if (response.ok) {
         try {
           const created = await response.clone().json();
           currentProductId = created?.id || currentProductId;
-          if (created?.id && lastPhotoDataUrl) {
+          if (created?.id && lastPhotoDataUrl && !research?.selected) {
             await ops({action:'save_image', product_id:created.id, url:lastPhotoDataUrl, kind:'source', position:99, is_main:false, mime:'image/jpeg'});
           }
-        } catch (_) {}
+        } catch (_) { alert('O produto foi salvo, mas a foto não pôde ser salva. Adicione-a em Gerenciar imagens.'); }
       }
       return response;
     }
@@ -184,6 +183,7 @@
     if (method === 'POST' && /\/api\/marketplace\/(preflight|publish)/.test(url) && typeof init.body === 'string') {
       let body;
       try { body = JSON.parse(init.body); } catch { body = null; }
+      if(body&&/\/preflight/.test(url))body.research_id=document.getElementById('anv-smart-controls')?.dataset.researchId||null;
       let publishable = [];
       if (body?.product_id) {
         try {
@@ -358,17 +358,27 @@
   }
 
   async function reanalyzeProduct(){
-    const id=await ensureCurrentProduct();if(!id)return alert('Produto não identificado.'); const file=await chooseFile();if(!file)return;
-    const image=await imageToDataURL(file); let data; try{data=await analyzeData(image,file.name);}catch(e){return alert(`Análise falhou: ${e.message}`);}
-    const p=await getProduct(id); const f=data.field_confidence||{}; const patch={};
-    const candidates=[['name',data.name,.72],['brand',data.brand,.90],['model',data.model,.92],['material',data.material,.82],['application',data.application,.82],['compatibility',data.compatibility,.92]];
-    for(const [k,v,min] of candidates)if(!text(p[k])&&text(v)&&Number(f[k]||data.confidence||0)>=min)patch[k]=v;
-    if(!p.description&&data.description)patch.description=data.description;if(!p.technical_details&&data.technical_details)patch.technical_details=data.technical_details;
-    const summary=`IA identificou: ${data.name||data.product_type||'produto'}\nConfiança: ${Math.round(Number(data.confidence||0)*100)}%\n\nAplicar somente sugestões confiáveis nos campos vazios?`;
-    if(!confirm(summary))return;
-    const r=await nativeFetch(`/api/products/${encodeURIComponent(id)}`,{method:'PATCH',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});if(!r.ok)return alert('Não foi possível atualizar o produto.');
-    for(const old of (p.images||[]).filter(x=>['source','original'].includes(String(x.kind||'').toLowerCase())))await ops({action:'delete_image',image_id:old.id}).catch(()=>{});
-    await ops({action:'save_image',product_id:id,url:image,kind:'source',position:99,is_main:false,mime:'image/jpeg'}); location.reload();
+    const id=await ensureCurrentProduct();if(!id)return alert('Produto não identificado.');
+    const file=await chooseFile();if(!file)return;
+    const d=modal('<h2>Pesquisar produto pela foto</h2><div id="anv-existing-research" aria-live="polite">PESQUISANDO PRODUTO...</div>');
+    const panel=d.querySelector('#anv-existing-research');
+    try {
+      const image=await imageToDataURL(file);const data=await researchRequest({action:'search',image_data_url:image});
+      renderResearch(data,panel,async(candidateId,button)=>{
+        button.disabled=true;
+        try {
+          const confirmed=await researchRequest({action:'confirm',research_id:data.research_id,candidate_id:candidateId});
+          const p=await getProduct(id);const patch={research_id:confirmed.research_id};
+          for(const [key,value]of Object.entries(confirmed.imported_fields||{}))if(!text(p[key]))patch[key]=value;
+          const specs=['dimensions','weight','references'].filter(k=>confirmed.imported_fields?.[k]).map(k=>`${labels[k]}: ${confirmed.imported_fields[k]}`);
+          if(specs.length&&!text(p.technical_details))patch.technical_details=[patch.technical_details,...specs].filter(Boolean).join('\n');
+          if(!confirm('Importar somente campos vazios desta fonte e salvar a foto original?\n\n'+Object.entries(patch).filter(([k])=>k!=='research_id').map(([k,v])=>`${k}: ${v}`).join('\n')))return;
+          const r=await nativeFetch(`/api/products/${encodeURIComponent(id)}`,{method:'PATCH',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+          if(!r.ok)throw new Error('Não foi possível salvar os dados e a fonte. Tente novamente.');
+          location.reload();
+        }catch(e){alert(e.message);}finally{button.disabled=false;}
+      },()=>{closeModal();reanalyzeProduct();},image);
+    }catch(e){panel.textContent=e.message;}
   }
 
   async function catalog(){const r=await nativeFetch('/api/anv-ops?action=catalog',{credentials:'include'});return r.ok?await r.json():[];}
@@ -387,8 +397,18 @@
     let p;try{p=await getProduct(id);}catch{return;}
     const commercial=(p.images||[]).filter(x=>!['source','original'].includes(String(x.kind||'').toLowerCase()));
     const div=document.createElement('div');div.id='anv-smart-controls';div.style.cssText='border:1px solid #e6e6e6;border-radius:12px;padding:12px;margin:12px 0;background:#fff';
-    div.innerHTML=`<div style="font-weight:800;margin-bottom:8px">Produto · ${commercial.length>=5?'imagens prontas':'imagens pendentes'} (${Math.min(commercial.length,5)}/5)</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="anv-edit-product" style="${ghostStyle}">Editar</button><button id="anv-reanalyze" style="${ghostStyle}">Reanalisar foto</button><button id="anv-generate-images" style="${btnStyle}">${commercial.length>=5?'Regenerar imagens':'Gerar imagens'}</button><button id="anv-manage-images" style="${ghostStyle}">Gerenciar imagens</button><button id="anv-delete-product" style="${ghostStyle};color:#b91c1c;border-color:#b91c1c">Excluir produto</button></div>`;
+    div.innerHTML=`<div style="font-weight:800;margin-bottom:8px">Produto · ${commercial.length>=5?'imagens prontas':'imagens pendentes'} (${Math.min(commercial.length,5)}/5)</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="anv-edit-product" style="${ghostStyle}">Editar</button><button id="anv-reanalyze" style="${ghostStyle}">Pesquisar produto</button><button id="anv-generate-images" style="${btnStyle}">${commercial.length>=5?'Regenerar imagens':'Gerar imagens'}</button><button id="anv-manage-images" style="${ghostStyle}">Gerenciar imagens</button><button id="anv-delete-product" style="${ghostStyle};color:#b91c1c;border-color:#b91c1c">Excluir produto</button></div>`;
     anchor.parentElement?.insertBefore(div,anchor);
+    try {
+      const r=await nativeFetch(`/api/ai/product-research?product_id=${encodeURIComponent(id)}`,{credentials:'include'});
+      const saved=r.ok?await r.json():null;
+      if(saved?.selected){
+        div.dataset.researchId=saved.research_id;
+        const provenance=document.createElement('p');provenance.style.cssText='font-size:13px;color:#666';
+        provenance.innerHTML=`Fonte confirmada: <a href="${esc(safeURL(saved.selected.source_url))}" target="_blank" rel="noopener noreferrer">${esc(saved.selected.source_title)}</a> · ${Number(saved.source_confidence)}% · ${esc(saved.status)}`;
+        div.appendChild(provenance);
+      }
+    }catch{}
     div.querySelector('#anv-edit-product').onclick=editProduct;
     div.querySelector('#anv-reanalyze').onclick=reanalyzeProduct;
     div.querySelector('#anv-generate-images').onclick=generateImages;

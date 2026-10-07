@@ -3,5 +3,13 @@
   "type": "module",
   "dependencies": {
     "@vercel/oidc": "4.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node tests/registration-browser.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "playwright-core": "1.63.0"
   }
 }

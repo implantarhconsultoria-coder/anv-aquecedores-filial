@@ -307,12 +307,31 @@ async def product_create(body: Dict[str, Any], user: dict = Depends(require_auth
     data = clean_product(body)
     if not str(data.get("name") or "").strip():
         raise HTTPException(400, "Nome do produto é obrigatório")
+    if body.get("research_id"):
+        try:
+            return await sb_rpc("anv_save_researched_product", {
+                "p_research_id": body["research_id"],
+                "p_actor_email": str(user.get("email") or "").lower().strip(),
+                "p_product": data,
+            })
+        except HTTPException as exc:
+            raise HTTPException(409, "Não foi possível salvar o produto e sua fonte. Confirme o resultado da pesquisa e tente novamente.") from exc
     return await sb_insert("anv_products", data)
 
 
 @app.patch("/api/products/{product_id}")
 async def product_update(product_id: str, body: Dict[str, Any], user: dict = Depends(require_auth)):
     data = clean_product(body)
+    if body.get("research_id"):
+        try:
+            return await sb_rpc("anv_save_researched_product", {
+                "p_research_id": body["research_id"],
+                "p_actor_email": str(user.get("email") or "").lower().strip(),
+                "p_product": data,
+                "p_product_id": product_id,
+            })
+        except HTTPException as exc:
+            raise HTTPException(409, "Não foi possível importar o produto e sua fonte. Confirme a pesquisa e tente novamente.") from exc
     data["updated_at"] = iso()
     rows = await sb_patch("anv_products", {"id": f"eq.{product_id}"}, data)
     if not rows:
@@ -577,6 +596,7 @@ def technical_attrs(node: Any) -> List[dict]:
 
 
 class PreflightIn(BaseModel):
+    research_id: Optional[str] = None
     product_id: Optional[str] = None
     product: Optional[Dict[str, Any]] = None
     category_id: Optional[str] = None
@@ -711,7 +731,14 @@ async def category_requirements(category_id: str, user: dict = Depends(require_a
 
 @app.post("/api/marketplace/preflight")
 async def preflight(body: PreflightIn, user: dict = Depends(require_auth)):
-    return await preflight_result(body)
+    result = await preflight_result(body)
+    if result.get("ready") and body.research_id and body.product_id:
+        await sb_patch("anv_product_research", {
+            "id": f"eq.{body.research_id}", "product_id": f"eq.{body.product_id}",
+            "actor_email": f"eq.{str(user.get('email') or '').lower().strip()}",
+            "status": "neq.PUBLICADO",
+        }, {"status": "PRONTO_PARA_ANUNCIO", "updated_at": iso()})
+    return result
 
 
 async def upload_ml_picture(data_url: str, token: str) -> dict:
