@@ -238,6 +238,16 @@
     } finally { busy = false; }
   }
 
+  async function analyzeData(imageData, filename = 'produto.jpg') {
+    if (busy) throw new Error('Já existe uma análise em andamento.');
+    clearPipeline();
+    await runPipeline(imageData, filename, null);
+    const data = aiData || window.__anvAiProduct;
+    if (!data) throw new Error('A análise não retornou resultado.');
+    if (data.research_status !== 'CONFIRMADO') throw new Error('Produto exato não confirmado; nenhum dado foi alterado.');
+    return data;
+  }
+
   async function analyze(file) {
     if (!file || busy) return;
     lastSelectedFile = file;
