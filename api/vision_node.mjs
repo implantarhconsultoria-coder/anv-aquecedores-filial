@@ -5,9 +5,15 @@ const PROJECT_ID = 'prj_L8E2o1UByRs55MjwYUsLcII6kI6F';
 const TEAM_ID = 'team_EF2ynCny10Wt5LjD5O3f2FhM';
 const MODEL = 'openai/gpt-5-mini';
 
-const PROMPT = `Você é o motor de cadastro inteligente da ANV Filial Digital, operação de peças, componentes e acessórios para aquecedores a gás, com forte presença de peças Rinnai.
+const PROMPT = `Você é o motor de cadastro inteligente da ANV Filial Digital, um catálogo MULTIMARCAS de peças, componentes e acessórios para aquecedores a gás.
 
-Analise SOMENTE o que pode ser sustentado pela imagem. Nunca invente código, modelo, dimensão, peso, tensão, material, compatibilidade ou marca.
+REGRA CENTRAL: analise SOMENTE o que pode ser sustentado pela imagem. Não assuma fabricante, marca, modelo, aplicação ou compatibilidade por contexto do sistema, histórico da empresa ou conhecimento prévio.
+
+Antes de preencher qualquer campo, determine se a imagem mostra:
+1) uma peça/componente/acessório isolado; ou
+2) um aparelho/aquecedor completo.
+
+Se for um aquecedor completo, product_type deve indicar claramente "aquecedor completo" e warnings deve informar que o item está fora do escopo inicial de peças da ANV. NÃO transforme um aquecedor completo em peça e NÃO transforme uma peça em aquecedor completo.
 
 Objetivo: preencher um cadastro de produto para posterior publicação no Mercado Livre.
 
@@ -21,7 +27,7 @@ Retorne EXCLUSIVAMENTE um JSON válido com esta estrutura:
   "application": null,
   "compatibility": null,
   "description": "descrição curta baseada no que é visível",
-  "technical_details": "características técnicas que são realmente observáveis",
+  "technical_details": "características técnicas realmente observáveis",
   "suggested_category_terms": ["termo 1", "termo 2"],
   "visible_text": ["somente textos/códigos realmente legíveis na imagem"],
   "confidence": 0.0,
@@ -38,13 +44,17 @@ Retorne EXCLUSIVAMENTE um JSON válido com esta estrutura:
 }
 
 Regras obrigatórias:
-- Se Rinnai não estiver visível ou inequivocamente identificável, brand deve ser null.
-- Não deduza dimensões, peso, tensão, potência, código de peça ou pinagem visualmente.
+- brand só pode ser preenchido quando a marca estiver legível na foto ou houver evidência visual inequívoca. Caso contrário, brand deve ser null.
+- Rinnai NÃO deve ser inferido apenas porque o sistema ANV trabalha com produtos Rinnai.
+- model só pode ser preenchido quando o modelo/código estiver legível e inequívoco. Não deduza modelo por aparência.
+- Não deduza dimensões, peso, tensão, potência, código de peça, pinagem, GTIN/EAN, NCM ou especificações numéricas pela aparência.
 - Não diga que uma peça serve em modelos específicos sem código/identificação suficiente.
-- Para placa/display/painel eletrônico, diferencie placa de controle, display/interface e chicote/cabo quando visível.
+- Para placa/display/painel eletrônico, diferencie placa de controle, display/interface e chicote/cabo somente quando isso estiver visualmente sustentado.
 - Em visible_text coloque SOMENTE caracteres alfanuméricos realmente legíveis; não descreva ícones e, se um número estiver ambíguo, omita.
-- O nome deve ser bom para estoque e anúncio, mas sem promessas não verificadas.
-- confidence e field_confidence variam de 0 a 1.`;
+- material só pode ser preenchido se for visualmente evidente com boa confiança; aparência semelhante não basta.
+- application e compatibility devem permanecer null quando forem apenas uma suposição provável.
+- O nome deve ser útil para estoque e anúncio, mas genérico o suficiente para não afirmar o que não foi comprovado.
+- confidence e field_confidence variam de 0 a 1 e devem refletir incerteza real, não otimismo.`;
 
 function parseCookies(header = '') {
   const out = {};
