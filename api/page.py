@@ -30,12 +30,17 @@ async def page(request: Request, path: str = ""):
         raise HTTPException(502, f"Interface base indisponível ({r.status_code})")
 
     html = r.text
-    script = '<script src="/smart.js?v=20261006-1" defer></script>'
-    if script not in html:
+    scripts = '<script src="/smart.js?v=20261007-1" defer></script><script src="/smart_patch.js?v=20261007-1" defer></script>'
+    if "/smart.js" not in html:
         if "</body>" in html:
-            html = html.replace("</body>", f"{script}</body>")
+            html = html.replace("</body>", f"{scripts}</body>")
         else:
-            html += script
+            html += scripts
+    elif "/smart_patch.js" not in html:
+        if "</body>" in html:
+            html = html.replace("</body>", '<script src="/smart_patch.js?v=20261007-1" defer></script></body>')
+        else:
+            html += '<script src="/smart_patch.js?v=20261007-1" defer></script>'
 
     return HTMLResponse(
         html,
