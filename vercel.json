@@ -7,20 +7,31 @@
     "api/page.py": { "maxDuration": 20 },
     "api/vision_node.mjs": { "maxDuration": 120 },
     "api/anv_ops.mjs": { "maxDuration": 60 },
-    "api/research_smoke.mjs": { "maxDuration": 60 },
     "api/publish_safe.py": { "maxDuration": 60 }
   },
   "redirects": [
     {
       "source": "/",
       "has": [
-        { "type": "header", "key": "user-agent", "value": ".*(Windows NT|Macintosh|X11|CrOS).*" }
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": ".*(Windows NT|Macintosh|X11|CrOS).*"
+        }
       ],
       "destination": "/desktop",
       "permanent": false
     },
-    { "source": "/", "destination": "/mobile", "permanent": false },
-    { "source": "/api/integrations/mercado-livre/callback", "destination": "/api/integrations/mercado-livre/oauth/callback", "permanent": false }
+    {
+      "source": "/",
+      "destination": "/mobile",
+      "permanent": false
+    },
+    {
+      "source": "/api/integrations/mercado-livre/callback",
+      "destination": "/api/integrations/mercado-livre/oauth/callback",
+      "permanent": false
+    }
   ],
   "rewrites": [
     { "source": "/desktop-base", "destination": "/desktop.html" },
@@ -29,21 +40,70 @@
     { "source": "/mobile", "destination": "/api/page?mode=mobile" },
     { "source": "/api/ai/analyze-product", "destination": "/api/vision_node" },
     { "source": "/api/anv-ops", "destination": "/api/anv_ops" },
-    { "source": "/api/research-smoke", "destination": "/api/research_smoke" },
     { "source": "/api/marketplace/publish", "destination": "/api/publish_safe" },
     { "source": "/api/(.*)", "destination": "/api/guard" },
     { "source": "/api", "destination": "/api/guard" }
   ],
   "headers": [
-    { "source": "/api/(.*)", "headers": [{ "key": "Cache-Control", "value": "no-store" }] },
-    { "source": "/", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/mobile", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/desktop", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/smart.js", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/smart_patch.js", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/access.js", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/research.js", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/index.html", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/desktop.html", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] }
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/mobile",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/desktop",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/smart.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/smart_patch.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/access.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/research.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    },
+    {
+      "source": "/desktop.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    }
   ]
 }
