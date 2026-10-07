@@ -83,6 +83,31 @@ function readSession(token) {
   }
 }
 
+function isOwnerSession(user) {
+  const email = String(user?.email || '').toLowerCase().trim();
+  const role = String(user?.role || '').toLowerCase();
+  const owner = String(process.env.ANV_LOGIN_EMAIL || '').toLowerCase().trim();
+  return !!email && email === owner && ['owner','admin'].includes(role);
+}
+
+async function ensureWriteAccess(user) {
+  if (isOwnerSession(user)) return true;
+  const base = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
+  const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  if (!base || !key) throw new Error('access_database_unavailable');
+  const email = String(user?.email || '').toLowerCase().trim();
+  const u = new URL(`${base}/rest/v1/anv_access_users`);
+  u.searchParams.set('select', 'access_status,active');
+  u.searchParams.set('email', `eq.${email}`);
+  u.searchParams.set('limit', '1');
+  const r = await fetch(u, { headers: { apikey:key, Authorization:`Bearer ${key}` } });
+  if (!r.ok) throw new Error('access_database_unavailable');
+  const rows = await r.json();
+  const record = rows?.[0];
+  if (!record || !record.active) return false;
+  return String(record.access_status || 'AGUARDANDO_LIBERACAO') === 'LIBERADO';
+}
+
 async function gatewayToken() {
   if (process.env.AI_GATEWAY_API_KEY) return process.env.AI_GATEWAY_API_KEY;
   return await getVercelOidcToken({ project: PROJECT_ID, team: TEAM_ID, expirationBufferMs: 60_000 });
@@ -151,7 +176,14 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return json(res, 405, { detail: 'Método não permitido' });
 
   const cookies = parseCookies(req.headers.cookie || '');
-  if (!readSession(cookies.anv_session)) return json(res, 401, { detail: 'Sessão inválida ou expirada' });
+  const user = readSession(cookies.anv_session);
+  if (!user) return json(res, 401, { detail: 'Sessão inválida ou expirada' });
+  try {
+    if (!(await ensureWriteAccess(user))) return json(res, 423, { detail: 'Aguardando liberação do sistema', code:'ANV_ACCESS_PENDING' });
+  } catch (e) {
+    if (e?.message === 'access_database_unavailable') return json(res, 503, { detail: 'Controle de acesso temporariamente indisponível' });
+    throw e;
+  }
 
   let body = req.body;
   if (typeof body === 'string') {
