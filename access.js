@@ -45,9 +45,19 @@
     return /(save|pub|prepare|edit|delete|remove|generate|connect|reval|confirm)/i.test(id);
   }
 
+  function clearDecoration(){
+    document.querySelector('.anv-access-banner')?.remove();
+    document.querySelectorAll('.anv-locked-action').forEach(el => {
+      el.classList.remove('anv-locked-action');
+      delete el.dataset.anvLockedVisual;
+      el.querySelector?.('.anv-lock-icon')?.remove();
+      if (el.tagName === 'INPUT' && text(el.value).startsWith('🔒 ')) el.value = text(el.value).slice(3);
+    });
+  }
+
   function decorate(){
     ensureStyle();
-    document.querySelector('.anv-access-banner')?.remove();
+    clearDecoration();
     if (!access.locked) return;
 
     const header = document.querySelector('header.app') || document.querySelector('header');
@@ -74,16 +84,20 @@
     });
   }
 
+  function applyUser(user){
+    access.user = user || null;
+    access.locked = !!access.user && access.user.role !== 'owner' && access.user.access_status !== 'LIBERADO';
+    access.loaded = true;
+    window.__anvAccess = access;
+    decorate();
+  }
+
   async function loadAccess(){
     try {
       const r = await fetch('/api/auth/me', { credentials:'include' });
       if (!r.ok) return;
       const data = await r.json();
-      access.user = data?.user || null;
-      access.locked = !!access.user && access.user.role !== 'owner' && access.user.access_status !== 'LIBERADO';
-      access.loaded = true;
-      window.__anvAccess = access;
-      decorate();
+      applyUser(data?.user || null);
     } catch (_) {}
   }
 
@@ -108,11 +122,31 @@
   window.fetch = async function(input, init = {}) {
     const url = typeof input === 'string' ? input : input?.url || '';
     const method = String(init?.method || 'GET').toUpperCase();
+
     if (access.locked && !['GET','HEAD','OPTIONS'].includes(method) && !/\/api\/auth\/(login|logout)/.test(url)) {
       showLocked();
       return new Response(JSON.stringify({detail:'Aguardando liberação do sistema', access_status:access.user?.access_status || 'AGUARDANDO_LIBERACAO'}), {status:423, headers:{'Content-Type':'application/json'}});
     }
-    return nativeFetch(input, init);
+
+    const response = await nativeFetch(input, init);
+
+    if (/\/api\/auth\/login(?:\?|$)/.test(url) && method === 'POST' && response.ok) {
+      try {
+        const data = await response.clone().json();
+        applyUser(data?.user || null);
+      } catch (_) {}
+    } else if (/\/api\/auth\/logout(?:\?|$)/.test(url) && method === 'POST' && response.ok) {
+      applyUser(null);
+      access.loaded = false;
+      clearDecoration();
+    } else if (/\/api\/auth\/me(?:\?|$)/.test(url) && method === 'GET' && response.ok) {
+      try {
+        const data = await response.clone().json();
+        applyUser(data?.user || null);
+      } catch (_) {}
+    }
+
+    return response;
   };
 
   new MutationObserver(() => { if (access.loaded) decorate(); }).observe(document.documentElement,{subtree:true,childList:true});
