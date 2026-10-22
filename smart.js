@@ -489,7 +489,28 @@
 
   async function chooseFile(){return new Promise(resolve=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.onchange=()=>resolve(i.files?.[0]||null);i.click();});}
 
-  async function generateImages(){
+  async function publishPreparedProduct(id){
+    const product = await getProduct(id);
+    const images = generatedImages(product.images || []).map(x => x.url).filter(Boolean);
+    if (images.length < 5) throw new Error('Ainda faltam imagens comerciais para publicar.');
+    const base = { product_id:id, images };
+    const pfResponse = await window.fetch('/api/marketplace/preflight', {
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body:JSON.stringify(base)
+    });
+    const pf = await pfResponse.json().catch(() => ({}));
+    if (!pfResponse.ok) throw new Error(humanMarketplaceError(pf, pfResponse.status));
+    if (!pf.ready) throw new Error((pf.blockers || ['Existem campos obrigatórios pendentes']).join(' · '));
+    const body = {...base, category_id:pf.selected_category?.id || null, confirm:true};
+    const response = await window.fetch('/api/marketplace/publish', {
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+    });
+    const out = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(humanMarketplaceError(out, response.status));
+    if (!out?.listing?.item_id) throw new Error('Publicação sem código retornado. Consulte a listagem antes de tentar novamente.');
+    return out;
+  }
+
+  async function generateImages(options = {}){
     const id=await ensureCurrentProduct(); if(!id)return alert('Produto não identificado.');
     let p=await getProduct(id); let images=p.images||[];
     let sources=images.filter(x=>['source','original'].includes(String(x.kind||'').toLowerCase())&&x.url);
@@ -505,7 +526,14 @@
         await ops({action:'save_image',product_id:id,url:data,kind:types[i],position:i,is_main:i===0,mime:'image/jpeg'});
         if(button)button.textContent=`Gerando ${i+1}/5…`;
       }
-      alert('Pacote de 5 imagens comerciais gerado e salvo.'); location.reload();
+      if (options?.publishAfter) {
+        if(button) button.textContent='Validando e publicando…';
+        const out = await publishPreparedProduct(id);
+        alert('Anúncio enviado ao Mercado Livre! Código: ' + out.listing.item_id + '\\nStatus: ' + (out.listing.status || 'em verificação'));
+      } else {
+        alert('Pacote de 5 imagens comerciais gerado e salvo.');
+      }
+      location.reload();
     }catch(e){alert(`Falha ao gerar imagens: ${e.message}`);if(button){button.disabled=false;button.textContent='Gerar imagens';}}
   }
 
@@ -548,11 +576,29 @@
     let p;try{p=await getProduct(id);}catch{return;}
     const commercial=(p.images||[]).filter(x=>!['source','original'].includes(String(x.kind||'').toLowerCase()));
     const div=document.createElement('div');div.id='anv-smart-controls';div.style.cssText='border:1px solid #e6e6e6;border-radius:12px;padding:12px;margin:12px 0;background:#fff';
-    div.innerHTML=`<div style="font-weight:800;margin-bottom:8px">Produto · ${commercial.length>=5?'imagens prontas':'imagens pendentes'} (${Math.min(commercial.length,5)}/5)</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="anv-edit-product" style="${ghostStyle}">Editar</button><button id="anv-reanalyze" style="${ghostStyle}">Reanalisar foto</button><button id="anv-generate-images" style="${btnStyle}">${commercial.length>=5?'Regenerar imagens':'Gerar imagens'}</button><button id="anv-manage-images" style="${ghostStyle}">Gerenciar imagens</button><button id="anv-delete-product" style="${ghostStyle};color:#b91c1c;border-color:#b91c1c">Excluir produto</button></div>`;
+    div.innerHTML=`<div style="font-weight:800;margin-bottom:8px">Produto · ${commercial.length>=5?'imagens prontas':'imagens pendentes'} (${Math.min(commercial.length,5)}/5)</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="anv-edit-product" style="${ghostStyle}">Editar</button><button id="anv-reanalyze" style="${ghostStyle}">Reanalisar foto</button><button id="anv-generate-images" style="${btnStyle}">${commercial.length>=5?'Regenerar imagens':'Gerar imagens'}</button><button id="anv-auto-publish" type="button" style="${btnStyle};background:#157347">Gerar e publicar direto</button><button id="anv-manage-images" style="${ghostStyle}">Gerenciar imagens</button><button id="anv-delete-product" style="${ghostStyle};color:#b91c1c;border-color:#b91c1c">Excluir produto</button></div>`;
     anchor.parentElement?.insertBefore(div,anchor);
     div.querySelector('#anv-edit-product').onclick=editProduct;
     div.querySelector('#anv-reanalyze').onclick=reanalyzeProduct;
     div.querySelector('#anv-generate-images').onclick=generateImages;
+    div.querySelector('#anv-auto-publish').onclick=async()=>{
+      const btn=div.querySelector('#anv-auto-publish');
+      btn.disabled=true;btn.textContent='Preparando anúncio…';
+      try {
+        const id=await ensureCurrentProduct();
+        if(!id) throw new Error('Produto não identificado.');
+        const product=await getProduct(id);
+        if(generatedImages(product.images||[]).length<5) {
+          await generateImages({publishAfter:true});
+        } else {
+          const out=await publishPreparedProduct(id);
+          alert('Anúncio enviado ao Mercado Livre! Código: '+out.listing.item_id+'\\nStatus: '+(out.listing.status||'em verificação'));
+          location.reload();
+        }
+      } catch(e) {
+        alert('Publicação interrompida: '+e.message);
+      } finally {btn.disabled=false;btn.textContent='Gerar e publicar direto';}
+    };
     div.querySelector('#anv-manage-images').onclick=manageImages;
     div.querySelector('#anv-delete-product').onclick=deleteProductUI;
   }
