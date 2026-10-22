@@ -24,8 +24,11 @@ jobs:
           node-version: '22'
       - name: Syntax check
         run: |
+          node --check smart.js
           node --check research.js
           node --check api/vision_node.mjs
           node --check api/anv_ops.mjs
+      - name: Check Python API syntax
+        run: python -m py_compile api/index.py api/publish_safe.py api/guard.py
       - name: Matching and handoff tests
         run: node --test tests/image_research.test.mjs
