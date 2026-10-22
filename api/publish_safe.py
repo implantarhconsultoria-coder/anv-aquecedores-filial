@@ -114,6 +114,21 @@ async def publish_safe(path: str, body: PublishIn, user: dict = Depends(require_
     else:
         payload["title"] = preview.get("title") or legacy_title(product)
 
+    # Validação oficial do Mercado Livre: bloqueia problemas antes de criar anúncio público.
+    # /items/validate retorna HTTP 204 quando o payload é aceito.
+    try:
+        validation_status, _ = await ml_request("POST", "/items/validate", token=token, body=payload)
+    except HTTPException as exc:
+        raise HTTPException(422, {
+            "message": "O Mercado Livre encontrou pendências. Nenhum anúncio foi criado.",
+            "validation": exc.detail,
+        }) from exc
+    if validation_status != 204:
+        raise HTTPException(422, {
+            "message": "O Mercado Livre não confirmou a validação. Nenhum anúncio foi criado.",
+            "validation_http_status": validation_status,
+        })
+
     _, item = await ml_request("POST", "/items", token=token, body=payload)
     item_id = item.get("id")
     if not item_id:
@@ -173,10 +188,28 @@ async def publish_safe(path: str, body: PublishIn, user: dict = Depends(require_
         except Exception:
             description_warning = "Anúncio publicado e vinculado; a descrição poderá ser sincronizada novamente"
 
+    # Consulte o item publicado novamente; o status da resposta de criação pode ser transitório.
+    verification_warning = None
+    try:
+        _, confirmed_item = await ml_request("GET", f"/items/{item_id}", token=token)
+        if str(confirmed_item.get("id") or "") == str(item_id):
+            latest_status = confirmed_item.get("status") or item.get("status")
+            if latest_status and latest_status != listing.get("status"):
+                await sb_patch("anv_marketplace_listings", {"item_id": f"eq.{item_id}"}, {
+                    "status": latest_status, "last_sync_at": iso()
+                })
+                listing["status"] = latest_status
+            item = confirmed_item
+        else:
+            verification_warning = "Anúncio criado, mas a confirmação do ID precisa ser repetida."
+    except Exception:
+        verification_warning = "Anúncio criado e registrado; consulte o status novamente no painel."
+
     return {
         "ok": True,
         "listing": listing,
         "ml_item": item,
         "description_http_status": description_status,
-        "warning": description_warning,
+        "warning": description_warning or verification_warning,
+        "verification_status": "confirmed" if not verification_warning else "pending",
     }
